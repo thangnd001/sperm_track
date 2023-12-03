@@ -13,7 +13,7 @@ def set_logging(name=None):
 
 
 LOGGER = set_logging(__name__)
-NCOLS = min(100, shutil.get_terminal_size().columns)
+NCOLS = shutil.get_terminal_size().columns
 
 
 def load_yaml(file_path):
@@ -30,7 +30,7 @@ def save_yaml(data_dict, save_path):
         yaml.safe_dump(data_dict, f, sort_keys=False)
 
 
-def write_tblog(tblogger, epoch, results, lrs, losses):
+def write_tblog(tblogger, epoch, results, losses):
     """Display mAP and loss information to log."""
     tblogger.add_scalar("val/mAP@0.5", results[0], epoch + 1)
     tblogger.add_scalar("val/mAP@0.50:0.95", results[1], epoch + 1)
@@ -39,9 +39,9 @@ def write_tblog(tblogger, epoch, results, lrs, losses):
     tblogger.add_scalar("train/dist_focalloss", losses[1], epoch + 1)
     tblogger.add_scalar("train/cls_loss", losses[2], epoch + 1)
 
-    tblogger.add_scalar("x/lr0", lrs[0], epoch + 1)
-    tblogger.add_scalar("x/lr1", lrs[1], epoch + 1)
-    tblogger.add_scalar("x/lr2", lrs[2], epoch + 1)
+    tblogger.add_scalar("x/lr0", results[2], epoch + 1)
+    tblogger.add_scalar("x/lr1", results[3], epoch + 1)
+    tblogger.add_scalar("x/lr2", results[4], epoch + 1)
 
 
 def write_tbimg(tblogger, imgs, step, type='train'):

@@ -14,9 +14,12 @@ from pycocotools.cocoeval import COCOeval
 from yolov6.data.data_load import create_dataloader
 from yolov6.utils.events import LOGGER, NCOLS
 from yolov6.utils.nms import non_max_suppression
-from yolov6.utils.general import download_ckpt
 from yolov6.utils.checkpoint import load_checkpoint
 from yolov6.utils.torch_utils import time_sync, get_model_info
+
+'''
+python tools/eval.py --task 'train'/'val'/'speed'
+'''
 
 
 class Evaler:
@@ -29,16 +32,16 @@ class Evaler:
                  device='',
                  half=True,
                  save_dir='',
-                 shrink_size=640,
-                 infer_on_rect=False,
+                 test_load_size=640,
+                 letterbox_return_int=False,
+                 force_no_pad=False,
+                 not_infer_on_rect=False,
+                 scale_exact=False,
                  verbose=False,
                  do_coco_metric=True,
                  do_pr_metric=False,
                  plot_curve=True,
-                 plot_confusion_matrix=False,
-                 specific_shape=False,
-                 height=640,
-                 width=640
+                 plot_confusion_matrix=False
                  ):
         assert do_pr_metric or do_coco_metric, 'ERROR: at least set one val metric'
         self.data = data
@@ -49,34 +52,30 @@ class Evaler:
         self.device = device
         self.half = half
         self.save_dir = save_dir
-        self.shrink_size = shrink_size
-        self.infer_on_rect = infer_on_rect
+        self.test_load_size = test_load_size
+        self.letterbox_return_int = letterbox_return_int
+        self.force_no_pad = force_no_pad
+        self.not_infer_on_rect = not_infer_on_rect
+        self.scale_exact = scale_exact
         self.verbose = verbose
         self.do_coco_metric = do_coco_metric
         self.do_pr_metric = do_pr_metric
         self.plot_curve = plot_curve
         self.plot_confusion_matrix = plot_confusion_matrix
-        self.specific_shape = specific_shape
-        self.height = height
-        self.width = width
 
     def init_model(self, model, weights, task):
         if task != 'train':
-            if not os.path.exists(weights):
-                download_ckpt(weights)
             model = load_checkpoint(weights, map_location=self.device)
             self.stride = int(model.stride.max())
+            if self.device.type != 'cpu':
+                model(torch.zeros(1, 3, self.img_size, self.img_size).to(self.device).type_as(next(model.parameters())))
             # switch to deploy
             from yolov6.layers.common import RepVGGBlock
             for layer in model.modules():
                 if isinstance(layer, RepVGGBlock):
                     layer.switch_to_deploy()
-                elif isinstance(layer, torch.nn.Upsample) and not hasattr(layer, 'recompute_scale_factor'):
-                    layer.recompute_scale_factor = None  # torch 1.11.0 compatibility
             LOGGER.info("Switch model to deploy modality.")
             LOGGER.info("Model Summary: {}".format(get_model_info(model, self.img_size)))
-        if self.device.type != 'cpu':
-            model(torch.zeros(1, 3, self.img_size, self.img_size).to(self.device).type_as(next(model.parameters())))
         model.half() if self.half else model.float()
         return model
 
@@ -87,14 +86,17 @@ class Evaler:
         self.is_coco = self.data.get("is_coco", False)
         self.ids = self.coco80_to_coco91_class() if self.is_coco else list(range(1000))
         if task != 'train':
+            pad = 0.0 if task == 'speed' else 0.5
             eval_hyp = {
-                "shrink_size":self.shrink_size,
+                "test_load_size":self.test_load_size,
+                "letterbox_return_int":self.letterbox_return_int,
             }
-            rect = self.infer_on_rect
-            pad = 0.5 if rect else 0.0
+            if self.force_no_pad:
+                pad = 0.0
+            rect = not self.not_infer_on_rect
             dataloader = create_dataloader(self.data[task if task in ('train', 'val', 'test') else 'val'],
                                            self.img_size, self.batch_size, self.stride, hyp=eval_hyp, check_labels=True, pad=pad, rect=rect,
-                                           data_dict=self.data, task=task, specific_shape=self.specific_shape, height=self.height, width=self.width)[0]
+                                           data_dict=self.data, task=task)[0]
         return dataloader
 
     def predict_model(self, model, dataloader, task):
@@ -116,6 +118,7 @@ class Evaler:
                 confusion_matrix = ConfusionMatrix(nc=model.nc)
 
         for i, (imgs, targets, paths, shapes) in enumerate(pbar):
+
             # pre-process
             t1 = time_sync()
             imgs = imgs.to(self.device, non_blocking=True)
@@ -246,10 +249,8 @@ class Evaler:
             else:
                 # generated coco format labels in dataset initialization
                 task = 'val' if task == 'train' else task
-                if not isinstance(self.data[task], list):
-                    self.data[task] = [self.data[task]]
-                dataset_root = os.path.dirname(os.path.dirname(self.data[task][0]))
-                base_name = os.path.basename(self.data[task][0])
+                dataset_root = os.path.dirname(os.path.dirname(self.data[task]))
+                base_name = os.path.basename(self.data[task])
                 anno_json = os.path.join(dataset_root, 'annotations', f'instances_{base_name}.json')
             pred_json = os.path.join(self.save_dir, "predictions.json")
             LOGGER.info(f'Saving {pred_json}...')
@@ -282,30 +283,22 @@ class Evaler:
                     label_count_dicts[nc_i]["images"].add(ann_i["image_id"])
                     label_count_dicts[nc_i]["anns"] += 1
 
-                s = ('%-16s' + '%12s' * 9) % ('Class', 'Labeled_images', 'Labels', 'P@.5iou', 'R@.5iou', 'F1@.5iou', 'mAP@.5', 'mAP@.9', 'mAP@.9:.95', 'mAP@.5:.95')
+                s = ('%-16s' + '%12s' * 7) % ('Class', 'Labeled_images', 'Labels', 'P@.5iou', 'R@.5iou', 'F1@.5iou', 'mAP@.5', 'mAP@.5:.95')
                 LOGGER.info(s)
                 #IOU , all p, all cats, all gt, maxdet 100
                 coco_p = cocoEval.eval['precision']
-                print(np.array(coco_p).shape)
                 coco_p_all = coco_p[:, :, :, 0, 2]
                 map = np.mean(coco_p_all[coco_p_all>-1])
 
                 coco_p_iou50 = coco_p[0, :, :, 0, 2]
                 map50 = np.mean(coco_p_iou50[coco_p_iou50>-1])
-
-                coco_p_iou90 = coco_p[8, :, :, 0, 2]
-                map90 = np.mean(coco_p_iou90[coco_p_iou90>-1])
-
-                coco_p_iou9095 = coco_p[8:, :, :, 0, 2]
-                map9095 = np.mean(coco_p_iou9095[coco_p_iou9095>-1])
-
                 mp = np.array([np.mean(coco_p_iou50[ii][coco_p_iou50[ii]>-1]) for ii in range(coco_p_iou50.shape[0])])
                 mr = np.linspace(.0, 1.00, int(np.round((1.00 - .0) / .01)) + 1, endpoint=True)
                 mf1 = 2 * mp * mr / (mp + mr + 1e-16)
                 i = mf1.argmax()  # max F1 index
 
-                pf = '%-16s' + '%12i' * 2 + '%12.3g' * 7  # print format
-                LOGGER.info(pf % ('all', val_dataset_img_count, val_dataset_anns_count, mp[i], mr[i], mf1[i], map50, map90, map9095, map))
+                pf = '%-16s' + '%12i' * 2 + '%12.3g' * 5  # print format
+                LOGGER.info(pf % ('all', val_dataset_img_count, val_dataset_anns_count, mp[i], mr[i], mf1[i], map50, map))
 
                 #compute each class best f1 and corresponding p and r
                 for nc_i in range(model.nc):
@@ -314,18 +307,11 @@ class Evaler:
 
                     coco_p_c_iou50 = coco_p[0, :, nc_i, 0, 2]
                     map50 = np.mean(coco_p_c_iou50[coco_p_c_iou50>-1])
-
-                    coco_p_c_iou90 = coco_p[8, :, nc_i, 0, 2]
-                    map90 = np.mean(coco_p_c_iou90[coco_p_c_iou90>-1])
-
-                    coco_p_c_iou9095 = coco_p[8:, :, nc_i, 0, 2]
-                    map9095 = np.mean(coco_p_c_iou9095[coco_p_c_iou9095>-1])
-
                     p = coco_p_c_iou50
                     r = np.linspace(.0, 1.00, int(np.round((1.00 - .0) / .01)) + 1, endpoint=True)
                     f1 = 2 * p * r / (p + r + 1e-16)
                     i = f1.argmax()
-                    LOGGER.info(pf % (model.names[nc_i], len(label_count_dicts[nc_i]["images"]), label_count_dicts[nc_i]["anns"], p[i], r[i], f1[i], map50, map90, map9095, map))
+                    LOGGER.info(pf % (model.names[nc_i], len(label_count_dicts[nc_i]["images"]), label_count_dicts[nc_i]["anns"], p[i], r[i], f1[i], map50, map))
             cocoEval.summarize()
             map, map50 = cocoEval.stats[:2]  # update results (mAP@0.5:0.95, mAP@0.5)
             # Return results
@@ -354,12 +340,20 @@ class Evaler:
 
     def scale_coords(self, img1_shape, coords, img0_shape, ratio_pad=None):
         '''Rescale coords (xyxy) from img1_shape to img0_shape.'''
-
-        gain = ratio_pad[0]
-        pad = ratio_pad[1]
+        if ratio_pad is None:  # calculate from img0_shape
+            gain = [min(img1_shape[0] / img0_shape[0], img1_shape[1] / img0_shape[1])]  # gain  = old / new
+            if self.scale_exact:
+                gain = [img1_shape[0] / img0_shape[0], img1_shape[1] / img0_shape[1]]
+            pad = (img1_shape[1] - img0_shape[1] * gain) / 2, (img1_shape[0] - img0_shape[0] * gain) / 2  # wh padding
+        else:
+            gain = ratio_pad[0]
+            pad = ratio_pad[1]
 
         coords[:, [0, 2]] -= pad[0]  # x padding
-        coords[:, [0, 2]] /= gain[1]  # raw x gain
+        if self.scale_exact:
+            coords[:, [0, 2]] /= gain[1]  # x gain
+        else:
+            coords[:, [0, 2]] /= gain[0]  # raw x gain
         coords[:, [1, 3]] -= pad[1]  # y padding
         coords[:, [1, 3]] /= gain[0]  # y gain
 
@@ -436,11 +430,8 @@ class Evaler:
             data = yaml.safe_load(yaml_file)
         task = 'test' if task == 'test' else 'val'
         path = data.get(task, 'val')
-        if not isinstance(path, list):
-            path = [path]
-        for p in path:
-            if not os.path.exists(p):
-                raise Exception(f'Dataset path {p} not found.')
+        if not os.path.exists(path):
+            raise Exception('Dataset not found.')
         return data
 
     @staticmethod
@@ -477,7 +468,7 @@ class Evaler:
         def init_data(dataloader, task):
             self.is_coco = self.data.get("is_coco", False)
             self.ids = self.coco80_to_coco91_class() if self.is_coco else list(range(1000))
-            pad = 0.0
+            pad = 0.0 if task == 'speed' else 0.5
             dataloader = create_dataloader(self.data[task if task in ('train', 'val', 'test') else 'val'],
                                            self.img_size, self.batch_size, self.stride, check_labels=True, pad=pad, rect=False,
                                            data_dict=self.data, task=task)[0]

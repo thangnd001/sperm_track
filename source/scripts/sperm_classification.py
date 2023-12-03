@@ -1,7 +1,12 @@
 from typing import Any
 
+import cv2
 import numpy as np
 import tensorflow as tf
+from keras.preprocessing import image
+from tensorflow.keras.preprocessing.image import img_to_array
+from tensorflow.keras.preprocessing.image import load_img
+from keras.applications.densenet import preprocess_input
 
 
 class SpermClassification(object):
@@ -25,22 +30,24 @@ class SpermClassification(object):
 		"""
 		preprocess image
 		"""
-
-		return input
+		img = cv2.resize(input, dsize=(150, 150))
+  
+		return preprocess_input(image.img_to_array(img))
 	
 	def init_batch(self, inputs, batch_size:int=96) -> Any:
 		list_batchs = []
 		batch = []
 		
 		for i, image in enumerate(inputs, start=0):
+			img_convert = self.preprocess(image)
 			if i % batch_size != 0:
-				batch.append(image)
+				batch.append(img_convert)
 			else:
-				batch.append(image)
-				list_batchs.append(batch)
+				batch.append(img_convert)
+				list_batchs.append(np.array(batch))
 				batch = []
 		
 		if batch != []:
-			list_batchs.append(batch)
+			list_batchs.append(np.array(batch))
 
 		return list_batchs

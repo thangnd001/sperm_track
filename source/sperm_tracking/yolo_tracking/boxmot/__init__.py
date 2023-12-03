@@ -2,6 +2,15 @@
 
 __version__ = '10.0.46'
 
+import sys
+import os
+
+ROOT_TRACK = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+print(ROOT_TRACK)
+if ROOT_TRACK not in sys.path:
+    sys.path.append(ROOT_TRACK)
+
+
 from boxmot.postprocessing.gsi import gsi
 from boxmot.tracker_zoo import create_tracker, get_tracker_config
 from boxmot.trackers.botsort.bot_sort import BoTSORT

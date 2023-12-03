@@ -5,7 +5,7 @@ import pycuda.autoinit
 import numpy as np
 import cv2
 import glob
-from tensorrt_processor import letterbox
+from Processor import letterbox
 
 import ctypes
 import logging
@@ -21,9 +21,6 @@ trt.IInt8EntropyCalibrator
 trt.IInt8EntropyCalibrator2
 trt.IInt8MinMaxCalibrator
 """
-
-IMG_FORMATS = [".bmp", ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".dng", ".webp", ".mpo"]
-IMG_FORMATS.extend([f.upper() for f in IMG_FORMATS])
 
 class Calibrator(trt.IInt8MinMaxCalibrator):
     def __init__(self, stream, cache_file=""):
@@ -60,9 +57,9 @@ class Calibrator(trt.IInt8MinMaxCalibrator):
             f.write(cache)
 
 
-def process_image(img_src, img_size, stride):
+def precess_image(img_src, img_size, stride):
     '''Process image before image inference.'''
-    image = letterbox(img_src, img_size, auto=False)[0]
+    image = letterbox(img_src, img_size, auto=False, return_int=True)[0]
     # Convert
     image = image.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
     image = np.ascontiguousarray(image).astype(np.float32)
@@ -77,7 +74,7 @@ class DataLoader:
         self.input_h = input_h
         self.input_w = input_w
         # self.img_list = [i.strip() for i in open('calib.txt').readlines()]
-        self.img_list = [os.path.join(calib_img_dir, x) for x in os.listdir(calib_img_dir) if os.path.splitext(x)[-1] in IMG_FORMATS]
+        self.img_list = glob.glob(os.path.join(calib_img_dir, "*.jpg"))
         assert len(self.img_list) > self.batch_size * self.length, \
             '{} must contains more than '.format(calib_img_dir) + str(self.batch_size * self.length) + ' images to calib'
         print('found all {} images to calib.'.format(len(self.img_list)))
@@ -89,10 +86,9 @@ class DataLoader:
     def next_batch(self):
         if self.index < self.length:
             for i in range(self.batch_size):
-                assert os.path.exists(self.img_list[i + self.index * self.batch_size]), f'{self.img_list[i + self.index * self.batch_size]} not found!!'
+                assert os.path.exists(self.img_list[i + self.index * self.batch_size]), 'not found!!'
                 img = cv2.imread(self.img_list[i + self.index * self.batch_size])
-                img = process_image(img, [self.input_h, self.input_w], 32)
-
+                img = precess_image(img, self.input_h, 32)
                 self.calibration_data[i] = img
 
             self.index += 1

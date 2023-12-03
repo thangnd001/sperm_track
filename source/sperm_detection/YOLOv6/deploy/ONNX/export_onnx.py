@@ -23,7 +23,7 @@ from io import BytesIO
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--weights', type=str, default='./yolov6s.pt', help='weights path')
-    parser.add_argument('--img-size', nargs='+', type=int, default=[640, 640], help='image size, the order is: height width')  # height, width
+    parser.add_argument('--img-size', nargs='+', type=int, default=[640, 640], help='image size')  # height, width
     parser.add_argument('--batch-size', type=int, default=1, help='batch size')
     parser.add_argument('--half', action='store_true', help='FP16 half-precision export')
     parser.add_argument('--inplace', action='store_true', help='set Detect() inplace=True')
@@ -34,8 +34,8 @@ if __name__ == '__main__':
     parser.add_argument('--ort', action='store_true', help='export onnx for onnxruntime')
     parser.add_argument('--with-preprocess', action='store_true', help='export bgr2rgb and normalize')
     parser.add_argument('--topk-all', type=int, default=100, help='topk objects for every images')
-    parser.add_argument('--iou-thres', type=float, default=0.65, help='iou threshold for NMS')
-    parser.add_argument('--conf-thres', type=float, default=0.5, help='conf threshold for NMS')
+    parser.add_argument('--iou-thres', type=float, default=0.45, help='iou threshold for NMS')
+    parser.add_argument('--conf-thres', type=float, default=0.4, help='conf threshold for NMS')
     parser.add_argument('--device', default='0', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
     args = parser.parse_args()
     args.img_size *= 2 if len(args.img_size) == 1 else 1  # expand
@@ -51,8 +51,6 @@ if __name__ == '__main__':
     for layer in model.modules():
         if isinstance(layer, RepVGGBlock):
             layer.switch_to_deploy()
-        elif isinstance(layer, nn.Upsample) and not hasattr(layer, 'recompute_scale_factor'):
-            layer.recompute_scale_factor = None  # torch 1.11.0 compatibility
     # Input
     img = torch.zeros(args.batch_size, 3, *args.img_size).to(device)  # image size(1,3,320,192) iDetection
 
@@ -61,8 +59,8 @@ if __name__ == '__main__':
         img, model = img.half(), model.half()  # to FP16
     model.eval()
     for k, m in model.named_modules():
-        if isinstance(m, ConvModule):  # assign export-friendly activations
-            if hasattr(m, 'act') and isinstance(m.act, nn.SiLU):
+        if isinstance(m, Conv):  # assign export-friendly activations
+            if isinstance(m.act, nn.SiLU):
                 m.act = SiLU()
         elif isinstance(m, Detect):
             m.inplace = args.inplace

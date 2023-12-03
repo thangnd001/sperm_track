@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
-from ast import Pass
 import os
 import time
 from copy import deepcopy
@@ -19,20 +18,14 @@ from torch.utils.tensorboard import SummaryWriter
 import tools.eval as eval
 from yolov6.data.data_load import create_dataloader
 from yolov6.models.yolo import build_model
-from yolov6.models.yolo_lite import build_model as build_lite_model
-
-from yolov6.models.losses.loss import ComputeLoss as ComputeLoss
-from yolov6.models.losses.loss_fuseab import ComputeLoss as ComputeLoss_ab
-from yolov6.models.losses.loss_distill import ComputeLoss as ComputeLoss_distill
-from yolov6.models.losses.loss_distill_ns import ComputeLoss as ComputeLoss_distill_ns
-
+from yolov6.models.loss import ComputeLoss
+from yolov6.models.loss_distill import ComputeLoss as ComputeLoss_distill
 from yolov6.utils.events import LOGGER, NCOLS, load_yaml, write_tblog, write_tbimg
 from yolov6.utils.ema import ModelEMA, de_parallel
 from yolov6.utils.checkpoint import load_state_dict, save_checkpoint, strip_optimizer
 from yolov6.solver.build import build_optimizer, build_lr_scheduler
 from yolov6.utils.RepOptimizer import extract_scales, RepVGGOptimizer
 from yolov6.utils.nms import xywh2xyxy
-from yolov6.utils.general import download_ckpt
 
 
 class Trainer:
@@ -40,7 +33,6 @@ class Trainer:
         self.args = args
         self.cfg = cfg
         self.device = device
-        self.max_epoch = args.epochs
 
         if args.resume:
             self.ckpt = torch.load(args.resume, map_location='cpu')
@@ -53,13 +45,10 @@ class Trainer:
         # get data loader
         self.data_dict = load_yaml(args.data_path)
         self.num_classes = self.data_dict['nc']
+        self.train_loader, self.val_loader = self.get_data_loader(args, cfg, self.data_dict)
         # get model and optimizer
-        self.distill_ns = True if self.args.distill and self.cfg.model.type in ['YOLOv6n','YOLOv6s'] else False
         model = self.get_model(args, cfg, self.num_classes, device)
         if self.args.distill:
-            if self.args.fuse_ab:
-                LOGGER.error('ERROR in: Distill models should turn off the fuse_ab.\n')
-                exit()
             self.teacher_model = self.get_teacher_model(args, cfg, self.num_classes, device)
         if self.args.quant:
             self.quant_setup(model, cfg, device)
@@ -80,46 +69,34 @@ class Trainer:
             model.load_state_dict(resume_state_dict, strict=True)  # load
             self.start_epoch = self.ckpt['epoch'] + 1
             self.optimizer.load_state_dict(self.ckpt['optimizer'])
-            self.scheduler.load_state_dict(self.ckpt['scheduler'])
             if self.main_process:
                 self.ema.ema.load_state_dict(self.ckpt['ema'].float().state_dict())
                 self.ema.updates = self.ckpt['updates']
-            if self.start_epoch > (self.max_epoch - self.args.stop_aug_last_n_epoch):
-                self.cfg.data_aug.mosaic = 0.0
-                self.cfg.data_aug.mixup = 0.0
-
-        self.train_loader, self.val_loader = self.get_data_loader(self.args, self.cfg, self.data_dict)
-
         self.model = self.parallel_model(args, model, device)
         self.model.nc, self.model.names = self.data_dict['nc'], self.data_dict['names']
 
+        self.max_epoch = args.epochs
         self.max_stepnum = len(self.train_loader)
         self.batch_size = args.batch_size
         self.img_size = args.img_size
-        self.rect = args.rect
         self.vis_imgs_list = []
         self.write_trainbatch_tb = args.write_trainbatch_tb
         # set color for classnames
         self.color = [tuple(np.random.choice(range(256), size=3)) for _ in range(self.model.nc)]
-        self.specific_shape = args.specific_shape
-        self.height = args.height
-        self.width = args.width
+
 
         self.loss_num = 3
-        self.loss_info = ['Epoch', 'lr', 'iou_loss', 'dfl_loss', 'cls_loss']
+        self.loss_info = ['Epoch', 'iou_loss', 'dfl_loss', 'cls_loss']
         if self.args.distill:
             self.loss_num += 1
             self.loss_info += ['cwd_loss']
 
-
     # Training Process
     def train(self):
         try:
-            self.before_train_loop()
+            self.train_before_loop()
             for self.epoch in range(self.start_epoch, self.max_epoch):
-                self.before_epoch()
-                self.train_one_epoch(self.epoch)
-                self.after_epoch()
+                self.train_in_loop(self.epoch)
             self.strip_model()
 
         except Exception as _:
@@ -129,16 +106,22 @@ class Trainer:
             self.train_after_loop()
 
     # Training loop for each epoch
-    def train_one_epoch(self, epoch_num):
+    def train_in_loop(self, epoch_num):
         try:
+            self.prepare_for_steps()
             for self.step, self.batch_data in self.pbar:
                 self.train_in_steps(epoch_num, self.step)
                 self.print_details()
         except Exception as _:
             LOGGER.error('ERROR in training steps.')
             raise
+        try:
+            self.eval_and_save()
+        except Exception as _:
+            LOGGER.error('ERROR in evaluate and save model.')
+            raise
 
-    # Training one batch data.
+    # Training loop for batchdata
     def train_in_steps(self, epoch_num, step_num):
         images, targets = self.prepro_data(self.batch_data, self.device)
         # plot train_batch and save to tensorboard once an epoch
@@ -148,26 +131,15 @@ class Trainer:
 
         # forward
         with amp.autocast(enabled=self.device != 'cpu'):
-            _, _, batch_height, batch_width = images.shape
             preds, s_featmaps = self.model(images)
             if self.args.distill:
                 with torch.no_grad():
                     t_preds, t_featmaps = self.teacher_model(images)
                 temperature = self.args.temperature
                 total_loss, loss_items = self.compute_loss_distill(preds, t_preds, s_featmaps, t_featmaps, targets, \
-                                                                  epoch_num, self.max_epoch, temperature, step_num,
-                                                                  batch_height, batch_width)
-
-            elif self.args.fuse_ab:
-                total_loss, loss_items = self.compute_loss((preds[0],preds[3],preds[4]), targets, epoch_num,
-                                                            step_num, batch_height, batch_width) # YOLOv6_af
-                total_loss_ab, loss_items_ab = self.compute_loss_ab(preds[:3], targets, epoch_num, step_num,
-                                                                     batch_height, batch_width) # YOLOv6_ab
-                total_loss += total_loss_ab
-                loss_items += loss_items_ab
+                                                                   epoch_num, self.max_epoch, temperature, step_num)
             else:
-                total_loss, loss_items = self.compute_loss(preds, targets, epoch_num, step_num,
-                                                            batch_height, batch_width) # YOLOv6_af
+                total_loss, loss_items = self.compute_loss(preds, targets, epoch_num, step_num)
             if self.rank != -1:
                 total_loss *= self.world_size
         # backward
@@ -175,15 +147,12 @@ class Trainer:
         self.loss_items = loss_items
         self.update_optimizer()
 
-    def after_epoch(self):
-        lrs_of_this_epoch = [x['lr'] for x in self.optimizer.param_groups]
-        self.scheduler.step() # update lr
+    def eval_and_save(self):
+        remaining_epochs = self.max_epoch - self.epoch
+        eval_interval = self.args.eval_interval if remaining_epochs > self.args.heavy_eval_range else 1
+        is_val_epoch = (not self.args.eval_final_only or (remaining_epochs == 1)) and (self.epoch % eval_interval == 0)
         if self.main_process:
             self.ema.update_attr(self.model, include=['nc', 'names', 'stride']) # update attributes for ema model
-
-            remaining_epochs = self.max_epoch - 1 - self.epoch # self.epoch is start from 0
-            eval_interval = self.args.eval_interval if remaining_epochs >= self.args.heavy_eval_range else min(3, self.args.eval_interval)
-            is_val_epoch = (remaining_epochs == 0) or ((not self.args.eval_final_only) and ((self.epoch + 1) % eval_interval == 0))
             if is_val_epoch:
                 self.eval_model()
                 self.ap = self.evaluate_results[1]
@@ -194,9 +163,7 @@ class Trainer:
                     'ema': deepcopy(self.ema.ema).half(),
                     'updates': self.ema.updates,
                     'optimizer': self.optimizer.state_dict(),
-                    'scheduler': self.scheduler.state_dict(),
                     'epoch': self.epoch,
-                    'results': self.evaluate_results,
                     }
 
             save_ckpt_dir = osp.join(self.save_dir, 'weights')
@@ -211,11 +178,12 @@ class Trainer:
                     save_checkpoint(ckpt, False, save_ckpt_dir, model_name='best_stop_aug_ckpt')
 
             del ckpt
-
-            self.evaluate_results = list(self.evaluate_results)
+            # log for learning rate
+            lr = [x['lr'] for x in self.optimizer.param_groups]
+            self.evaluate_results = list(self.evaluate_results) + lr
 
             # log for tensorboard
-            write_tblog(self.tblogger, self.epoch, self.evaluate_results, lrs_of_this_epoch, self.mean_loss)
+            write_tblog(self.tblogger, self.epoch, self.evaluate_results, self.mean_loss)
             # save validation predictions to tensorboard
             write_tbimg(self.tblogger, self.vis_imgs_list, self.epoch, type='val')
 
@@ -228,11 +196,7 @@ class Trainer:
                             conf_thres=0.03,
                             dataloader=self.val_loader,
                             save_dir=self.save_dir,
-                            task='train',
-                            specific_shape=self.specific_shape,
-                            height=self.height,
-                            width=self.width
-                            )
+                            task='train')
         else:
             def get_cfg_value(cfg_dict, value_str, default_value):
                 if value_str in cfg_dict:
@@ -251,16 +215,16 @@ class Trainer:
                             dataloader=self.val_loader,
                             save_dir=self.save_dir,
                             task='train',
-                            shrink_size=get_cfg_value(self.cfg.eval_params, "shrink_size", eval_img_size),
-                            infer_on_rect=get_cfg_value(self.cfg.eval_params, "infer_on_rect", False),
+                            test_load_size=get_cfg_value(self.cfg.eval_params, "test_load_size", eval_img_size),
+                            letterbox_return_int=get_cfg_value(self.cfg.eval_params, "letterbox_return_int", False),
+                            force_no_pad=get_cfg_value(self.cfg.eval_params, "force_no_pad", False),
+                            not_infer_on_rect=get_cfg_value(self.cfg.eval_params, "not_infer_on_rect", False),
+                            scale_exact=get_cfg_value(self.cfg.eval_params, "scale_exact", False),
                             verbose=get_cfg_value(self.cfg.eval_params, "verbose", False),
                             do_coco_metric=get_cfg_value(self.cfg.eval_params, "do_coco_metric", True),
                             do_pr_metric=get_cfg_value(self.cfg.eval_params, "do_pr_metric", False),
                             plot_curve=get_cfg_value(self.cfg.eval_params, "plot_curve", False),
                             plot_confusion_matrix=get_cfg_value(self.cfg.eval_params, "plot_confusion_matrix", False),
-                            specific_shape=self.specific_shape,
-                            height=self.height,
-                            width=self.width
                             )
 
         LOGGER.info(f"Epoch: {self.epoch} | mAP@0.5: {results[0]} | mAP@0.50:0.95: {results[1]}")
@@ -269,7 +233,7 @@ class Trainer:
         self.plot_val_pred(vis_outputs, vis_paths)
 
 
-    def before_train_loop(self):
+    def train_before_loop(self):
         LOGGER.info('Training start...')
         self.start_time = time.time()
         self.warmup_stepnum = max(round(self.cfg.solver.warmup_epochs * self.max_stepnum), 1000) if self.args.quant is False else 0
@@ -280,48 +244,24 @@ class Trainer:
         self.best_ap, self.ap = 0.0, 0.0
         self.best_stop_strong_aug_ap = 0.0
         self.evaluate_results = (0, 0) # AP50, AP50_95
-        # resume results
-        if hasattr(self, "ckpt"):
-            self.evaluate_results = self.ckpt['results']
-            self.best_ap = self.evaluate_results[1]
-            self.best_stop_strong_aug_ap = self.evaluate_results[1]
-
-
         self.compute_loss = ComputeLoss(num_classes=self.data_dict['nc'],
                                         ori_img_size=self.img_size,
-                                        warmup_epoch=self.cfg.model.head.atss_warmup_epoch,
                                         use_dfl=self.cfg.model.head.use_dfl,
                                         reg_max=self.cfg.model.head.reg_max,
-                                        iou_type=self.cfg.model.head.iou_type,
-					                    fpn_strides=self.cfg.model.head.strides)
+                                        iou_type=self.cfg.model.head.iou_type)
+        if self.args.distill:
+            self.compute_loss_distill = ComputeLoss_distill(num_classes=self.data_dict['nc'],
+                                                            ori_img_size=self.img_size,
+                                                            use_dfl=self.cfg.model.head.use_dfl,
+                                                            reg_max=self.cfg.model.head.reg_max,
+                                                            iou_type=self.cfg.model.head.iou_type,
+                                                            distill_weight = self.cfg.model.head.distill_weight,
+                                                            distill_feat = self.args.distill_feat,
+                                                            )
 
-        if self.args.fuse_ab:
-            self.compute_loss_ab = ComputeLoss_ab(num_classes=self.data_dict['nc'],
-                                        ori_img_size=self.img_size,
-                                        warmup_epoch=0,
-                                        use_dfl=False,
-                                        reg_max=0,
-                                        iou_type=self.cfg.model.head.iou_type,
-                                        fpn_strides=self.cfg.model.head.strides,
-                                        )
-        if self.args.distill :
-            if self.cfg.model.type in ['YOLOv6n','YOLOv6s']:
-                Loss_distill_func = ComputeLoss_distill_ns
-            else:
-                Loss_distill_func = ComputeLoss_distill
-
-            self.compute_loss_distill = Loss_distill_func(num_classes=self.data_dict['nc'],
-                                                        ori_img_size=self.img_size,
-                                                        fpn_strides=self.cfg.model.head.strides,
-                                                        warmup_epoch=self.cfg.model.head.atss_warmup_epoch,
-                                                        use_dfl=self.cfg.model.head.use_dfl,
-                                                        reg_max=self.cfg.model.head.reg_max,
-                                                        iou_type=self.cfg.model.head.iou_type,
-                                                        distill_weight = self.cfg.model.head.distill_weight,
-                                                        distill_feat = self.args.distill_feat,
-                                                        )
-
-    def before_epoch(self):
+    def prepare_for_steps(self):
+        if self.epoch > self.start_epoch:
+            self.scheduler.step()
         #stop strong aug like mosaic and mixup from last n epoch by recreate dataloader
         if self.epoch == self.max_epoch - self.args.stop_aug_last_n_epoch:
             self.cfg.data_aug.mosaic = 0.0
@@ -333,7 +273,7 @@ class Trainer:
         self.mean_loss = torch.zeros(self.loss_num, device=self.device)
         self.optimizer.zero_grad()
 
-        LOGGER.info(('\n' + '%10s' * (self.loss_num + 2)) % (*self.loss_info,))
+        LOGGER.info(('\n' + '%10s' * (self.loss_num + 1)) % (*self.loss_info,))
         self.pbar = enumerate(self.train_loader)
         if self.main_process:
             self.pbar = tqdm(self.pbar, total=self.max_stepnum, ncols=NCOLS, bar_format='{l_bar}{bar:10}{r_bar}{bar:-10b}')
@@ -342,8 +282,8 @@ class Trainer:
     def print_details(self):
         if self.main_process:
             self.mean_loss = (self.mean_loss * self.step + self.loss_items) / (self.step + 1)
-            self.pbar.set_description(('%10s' + ' %10.4g' + '%10.4g' * self.loss_num) % (f'{self.epoch}/{self.max_epoch - 1}', \
-                                                                self.scheduler.get_last_lr()[0], *(self.mean_loss)))
+            self.pbar.set_description(('%10s' + '%10.4g' * self.loss_num) % (f'{self.epoch}/{self.max_epoch - 1}', \
+                                                                *(self.mean_loss)))
 
     def strip_model(self):
         if self.main_process:
@@ -384,19 +324,16 @@ class Trainer:
         grid_size = max(int(max(cfg.model.head.strides)), 32)
         # create train dataloader
         train_loader = create_dataloader(train_path, args.img_size, args.batch_size // args.world_size, grid_size,
-                                         hyp=dict(cfg.data_aug), augment=True, rect=args.rect, rank=args.local_rank,
+                                         hyp=dict(cfg.data_aug), augment=True, rect=False, rank=args.local_rank,
                                          workers=args.workers, shuffle=True, check_images=args.check_images,
-                                         check_labels=args.check_labels, data_dict=data_dict, task='train',
-                                         specific_shape=args.specific_shape, height=args.height, width=args.width)[0]
+                                         check_labels=args.check_labels, data_dict=data_dict, task='train')[0]
         # create val dataloader
         val_loader = None
         if args.rank in [-1, 0]:
-             # TODO: check whether to set rect to self.rect?
             val_loader = create_dataloader(val_path, args.img_size, args.batch_size // args.world_size * 2, grid_size,
                                            hyp=dict(cfg.data_aug), rect=True, rank=-1, pad=0.5,
                                            workers=args.workers, check_images=args.check_images,
-                                           check_labels=args.check_labels, data_dict=data_dict, task='val',
-                                           specific_shape=args.specific_shape, height=args.height, width=args.width)[0]
+                                           check_labels=args.check_labels, data_dict=data_dict, task='val')[0]
 
         return train_loader, val_loader
 
@@ -407,25 +344,17 @@ class Trainer:
         return images, targets
 
     def get_model(self, args, cfg, nc, device):
-        if 'YOLOv6-lite' in cfg.model.type:
-            assert not self.args.fuse_ab, 'ERROR in: YOLOv6-lite models not support fuse_ab mode.'
-            assert not self.args.distill, 'ERROR in: YOLOv6-lite models not support distill mode.'
-            model = build_lite_model(cfg, nc, device)
-        else:
-            model = build_model(cfg, nc, device, fuse_ab=self.args.fuse_ab, distill_ns=self.distill_ns)
+        model = build_model(cfg, nc, device)
         weights = cfg.model.pretrained
         if weights:  # finetune if pretrained model is set
-            if not os.path.exists(weights):
-                download_ckpt(weights)
             LOGGER.info(f'Loading state_dict from {weights} for fine-tuning...')
             model = load_state_dict(weights, model, map_location=device)
 
         LOGGER.info('Model: {}'.format(model))
         return model
 
-    def get_teacher_model(self, args, cfg, nc, device):
-        teacher_fuse_ab = False if cfg.model.head.num_layers != 3 else True
-        model = build_model(cfg, nc, device, fuse_ab=teacher_fuse_ab)
+    def get_teacher_model(self, args,cfg,nc, device):
+        model = build_model(cfg, nc, device)
         weights = args.teacher_model_path
         if weights:  # finetune if pretrained model is set
             LOGGER.info(f'Loading state_dict from {weights} for teacher')
@@ -467,7 +396,7 @@ class Trainer:
     def get_optimizer(self, args, cfg, model):
         accumulate = max(1, round(64 / args.batch_size))
         cfg.solver.weight_decay *= args.batch_size * accumulate / 64
-        cfg.solver.lr0 *= args.batch_size / (self.world_size * args.bs_per_gpu) # rescale lr0 related to batchsize
+        cfg.solver.lr0 *= args.batch_size / (self.world_size * 32) # rescale lr0 related to batchsize
         optimizer = build_optimizer(cfg, model)
         return optimizer
 

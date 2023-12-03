@@ -15,12 +15,10 @@ from multiprocessing.pool import Pool
 
 import cv2
 import numpy as np
-from tqdm import tqdm
-from PIL import ExifTags, Image, ImageOps
-
 import torch
+from PIL import ExifTags, Image, ImageOps
 from torch.utils.data import Dataset
-import torch.distributed as dist
+from tqdm import tqdm
 
 from .data_augment import (
     augment_hsv,
@@ -30,7 +28,6 @@ from .data_augment import (
     mosaic_augmentation,
 )
 from yolov6.utils.events import LOGGER
-
 
 # Parameters
 IMG_FORMATS = ["bmp", "jpg", "jpeg", "png", "tif", "tiff", "dng", "webp", "mpo"]
@@ -43,10 +40,6 @@ for k, v in ExifTags.TAGS.items():
         ORIENTATION = k
         break
 
-def img2label_paths(img_paths):
-    # Define label paths as a function of image paths
-    sa, sb = f'{os.sep}images{os.sep}', f'{os.sep}labels{os.sep}'  # /images/, /labels/ substrings
-    return [sb.join(x.rsplit(sa, 1)).rsplit('.', 1)[0] + '.txt' for x in img_paths]
 
 class TrainValDataset(Dataset):
     '''YOLOv6 train_loader/val_loader, loads images and labels for training and validation.'''
@@ -65,10 +58,6 @@ class TrainValDataset(Dataset):
         rank=-1,
         data_dict=None,
         task="train",
-        specific_shape = False,
-        height=1088,
-        width=1920
-
     ):
         assert task.lower() in ("train", "val", "test", "speed"), f"Not supported task: {task}"
         t1 = time.time()
@@ -77,27 +66,15 @@ class TrainValDataset(Dataset):
         self.task = self.task.capitalize()
         self.class_names = data_dict["names"]
         self.img_paths, self.labels = self.get_imgs_labels(self.img_dir)
-        self.rect = rect
-        self.specific_shape = specific_shape
-        self.target_height = height
-        self.target_width = width
         if self.rect:
             shapes = [self.img_info[p]["shape"] for p in self.img_paths]
             self.shapes = np.array(shapes, dtype=np.float64)
-            if dist.is_initialized():
-                # in DDP mode, we need to make sure all images within batch_size * gpu_num
-                # will resized and padded to same shape.
-                sample_batch_size = self.batch_size * dist.get_world_size()
-            else:
-                sample_batch_size = self.batch_size
             self.batch_indices = np.floor(
-                np.arange(len(shapes)) / sample_batch_size
+                np.arange(len(shapes)) / self.batch_size
             ).astype(
-                np.int_
+                np.int
             )  # batch indices of each image
-
             self.sort_files_shapes()
-
         t2 = time.time()
         if self.main_process:
             LOGGER.info(f"%.1fs for dataset initialization." % (t2 - t1))
@@ -111,33 +88,36 @@ class TrainValDataset(Dataset):
         This function applies mosaic and mixup augments during training.
         During validation, letterbox augment is applied.
         """
-        target_shape = (
-                (self.target_height, self.target_width) if self.specific_shape else
-                self.batch_shapes[self.batch_indices[index]] if self.rect
-                else self.img_size
-                )
-
         # Mosaic Augmentation
         if self.augment and random.random() < self.hyp["mosaic"]:
-            img, labels = self.get_mosaic(index, target_shape)
+            img, labels = self.get_mosaic(index)
             shapes = None
 
             # MixUp augmentation
             if random.random() < self.hyp["mixup"]:
                 img_other, labels_other = self.get_mosaic(
-                    random.randint(0, len(self.img_paths) - 1), target_shape
+                    random.randint(0, len(self.img_paths) - 1)
                 )
                 img, labels = mixup(img, labels, img_other, labels_other)
 
         else:
             # Load image
-            if self.hyp and "shrink_size" in self.hyp:
-                img, (h0, w0), (h, w) = self.load_image(index, self.hyp["shrink_size"])
+            if self.hyp and "test_load_size" in self.hyp:
+                img, (h0, w0), (h, w) = self.load_image(index, self.hyp["test_load_size"])
             else:
                 img, (h0, w0), (h, w) = self.load_image(index)
 
-            # letterbox
-            img, ratio, pad = letterbox(img, target_shape, auto=False, scaleup=self.augment)
+            # Letterbox
+            shape = (
+                self.batch_shapes[self.batch_indices[index]]
+                if self.rect
+                else self.img_size
+            )  # final letterboxed shape
+            if self.hyp and "letterbox_return_int" in self.hyp:
+                img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment, return_int=self.hyp["letterbox_return_int"])
+            else:
+                img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
+
             shapes = (h0, w0), ((h * ratio / h0, w * ratio / w0), pad)  # for COCO mAP rescaling
 
             labels = self.labels[index].copy()
@@ -168,7 +148,7 @@ class TrainValDataset(Dataset):
                     translate=self.hyp["translate"],
                     scale=self.hyp["scale"],
                     shear=self.hyp["shear"],
-                    new_shape=target_shape,
+                    new_shape=(self.img_size, self.img_size),
                 )
 
         if len(labels):
@@ -197,7 +177,7 @@ class TrainValDataset(Dataset):
 
         return torch.from_numpy(img), labels_out, self.img_paths[index], shapes
 
-    def load_image(self, index, shrink_size=None):
+    def load_image(self, index, force_load_size=None):
         """Load image.
         This function loads image by cv2, resize original image to target shape(img_size) with keeping ratio.
 
@@ -213,24 +193,18 @@ class TrainValDataset(Dataset):
             assert im is not None, f"Image Not Found {path}, workdir: {os.getcwd()}"
 
         h0, w0 = im.shape[:2]  # origin shape
-        if self.specific_shape:
-            # keep ratio resize
-            ratio = min(self.target_width / w0, self.target_height / h0)
-
-        elif shrink_size:
-            ratio = (self.img_size - shrink_size) / max(h0, w0)
-
+        if force_load_size:
+            r = force_load_size / max(h0, w0)
         else:
-            ratio = self.img_size / max(h0, w0)
-
-        if ratio != 1:
-                im = cv2.resize(
-                    im,
-                    (int(w0 * ratio), int(h0 * ratio)),
-                    interpolation=cv2.INTER_AREA
-                    if ratio < 1 and not self.augment
-                    else cv2.INTER_LINEAR,
-                )
+            r = self.img_size / max(h0, w0)
+        if r != 1:
+            im = cv2.resize(
+                im,
+                (int(w0 * r), int(h0 * r)),
+                interpolation=cv2.INTER_AREA
+                if r < 1 and not self.augment
+                else cv2.INTER_LINEAR,
+            )
         return im, (h0, w0), im.shape[:2]
 
     @staticmethod
@@ -241,26 +215,21 @@ class TrainValDataset(Dataset):
             l[:, 0] = i  # add target image index for build_targets()
         return torch.stack(img, 0), torch.cat(label, 0), path, shapes
 
-    def get_imgs_labels(self, img_dirs):
-        if not isinstance(img_dirs, list):
-            img_dirs = [img_dirs]
-        # we store the cache img file in the first directory of img_dirs
+    def get_imgs_labels(self, img_dir):
+
+        assert osp.exists(img_dir), f"{img_dir} is an invalid directory path!"
         valid_img_record = osp.join(
-            osp.dirname(img_dirs[0]), "." + osp.basename(img_dirs[0]) + "_cache.json"
+            osp.dirname(img_dir), "." + osp.basename(img_dir) + ".json"
         )
         NUM_THREADS = min(8, os.cpu_count())
-        img_paths = []
-        for img_dir in img_dirs:
-            assert osp.exists(img_dir), f"{img_dir} is an invalid directory path!"
-            img_paths += glob.glob(osp.join(img_dir, "**/*"), recursive=True)
 
+        img_paths = glob.glob(osp.join(img_dir, "**/*"), recursive=True)
         img_paths = sorted(
             p for p in img_paths if p.split(".")[-1].lower() in IMG_FORMATS and os.path.isfile(p)
         )
-
         assert img_paths, f"No images found in {img_dir}."
+
         img_hash = self.get_hash(img_paths)
-        LOGGER.info(f'img record infomation path is:{valid_img_record}')
         if osp.exists(valid_img_record):
             with open(valid_img_record, "r") as f:
                 cache_info = json.load(f)
@@ -300,10 +269,33 @@ class TrainValDataset(Dataset):
                 json.dump(cache_info, f)
 
         # check and load anns
+        base_dir = osp.basename(img_dir)
+        if base_dir != "":
+            label_dir = osp.join(
+            osp.dirname(osp.dirname(img_dir)), "labels", osp.basename(img_dir)
+            )
+            assert osp.exists(label_dir), f"{label_dir} is an invalid directory path!"
+        else:
+            sub_dirs= []
+            label_dir = img_dir
+            for rootdir, dirs, files in os.walk(label_dir):
+                for subdir in dirs:
+                    sub_dirs.append(subdir)
+            assert "labels" in sub_dirs, f"Could not find a labels directory!"
+
+
+        # Look for labels in the save relative dir that the images are in
+        def _new_rel_path_with_ext(base_path: str, full_path: str, new_ext: str):
+            rel_path = osp.relpath(full_path, base_path)
+            return osp.join(osp.dirname(rel_path), osp.splitext(osp.basename(rel_path))[0] + new_ext)
+
 
         img_paths = list(img_info.keys())
-        label_paths = img2label_paths(img_paths)
-        assert label_paths, f"No labels found."
+        label_paths = sorted(
+            osp.join(label_dir, _new_rel_path_with_ext(img_dir, p, ".txt"))
+            for p in img_paths
+        )
+        assert label_paths, f"No labels found in {label_dir}."
         label_hash = self.get_hash(label_paths)
         if "label_hash" not in cache_info or cache_info["label_hash"] != label_hash:
             self.check_labels = True
@@ -358,11 +350,11 @@ class TrainValDataset(Dataset):
                 assert (
                     self.class_names
                 ), "Class names is required when converting labels to coco format for evaluating."
-                save_dir = osp.join(osp.dirname(osp.dirname(img_dirs[0])), "annotations")
+                save_dir = osp.join(osp.dirname(osp.dirname(img_dir)), "annotations")
                 if not osp.exists(save_dir):
                     os.mkdir(save_dir)
                 save_path = osp.join(
-                    save_dir, "instances_" + osp.basename(img_dirs[0]) + ".json"
+                    save_dir, "instances_" + osp.basename(img_dir) + ".json"
                 )
                 TrainValDataset.generate_coco_format_labels(
                     img_info, self.class_names, save_path
@@ -387,7 +379,7 @@ class TrainValDataset(Dataset):
         )
         return img_paths, labels
 
-    def get_mosaic(self, index, shape):
+    def get_mosaic(self, index):
         """Gets images and labels after mosaic augments"""
         indices = [index] + random.choices(
             range(0, len(self.img_paths)), k=3
@@ -401,7 +393,7 @@ class TrainValDataset(Dataset):
             hs.append(h)
             ws.append(w)
             labels.append(labels_per_img)
-        img, labels = mosaic_augmentation(shape, imgs, hs, ws, labels, self.hyp, self.specific_shape, self.target_height, self.target_width)
+        img, labels = mosaic_augmentation(self.img_size, imgs, hs, ws, labels, self.hyp)
         return img, labels
 
     def general_augment(self, img, labels):
@@ -435,7 +427,7 @@ class TrainValDataset(Dataset):
     def sort_files_shapes(self):
         '''Sort by aspect ratio.'''
         batch_num = self.batch_indices[-1] + 1
-        s = self.shapes  # [height, width]
+        s = self.shapes  # wh
         ar = s[:, 1] / s[:, 0]  # aspect ratio
         irect = ar.argsort()
         self.img_paths = [self.img_paths[i] for i in irect]
@@ -449,12 +441,12 @@ class TrainValDataset(Dataset):
             ari = ar[self.batch_indices == i]
             mini, maxi = ari.min(), ari.max()
             if maxi < 1:
-                shapes[i] = [1, maxi]
+                shapes[i] = [maxi, 1]
             elif mini > 1:
-                shapes[i] = [1 / mini, 1]
+                shapes[i] = [1, 1 / mini]
         self.batch_shapes = (
             np.ceil(np.array(shapes) * self.img_size / self.stride + self.pad).astype(
-                np.int_
+                np.int
             )
             * self.stride
         )
@@ -467,7 +459,7 @@ class TrainValDataset(Dataset):
             im = Image.open(im_file)
             im.verify()  # PIL verify
             im = Image.open(im_file)  # need to reload the image after using verify()
-            shape = (im.height, im.width)  # (height, width)
+            shape = im.size  # (width, height)
             try:
                 im_exif = im._getexif()
                 if im_exif and ORIENTATION in im_exif:
@@ -476,6 +468,10 @@ class TrainValDataset(Dataset):
                         shape = (shape[1], shape[0])
             except:
                 im_exif = None
+            if im_exif and ORIENTATION in im_exif:
+                rotation = im_exif[ORIENTATION]
+                if rotation in (6, 8):
+                    shape = (shape[1], shape[0])
 
             assert (shape[0] > 9) & (shape[1] > 9), f"image size {shape} <10 pixels"
             assert im.format.lower() in IMG_FORMATS, f"invalid image format {im.format}"
@@ -548,7 +544,7 @@ class TrainValDataset(Dataset):
         for i, (img_path, info) in enumerate(tqdm(img_info.items())):
             labels = info["labels"] if info["labels"] else []
             img_id = osp.splitext(osp.basename(img_path))[0]
-            img_h, img_w = info["shape"]
+            img_w, img_h = info["shape"]
             dataset["images"].append(
                 {
                     "file_name": os.path.basename(img_path),
@@ -598,42 +594,30 @@ class TrainValDataset(Dataset):
 
 
 class LoadData:
-    def __init__(self, path, webcam, webcam_addr):
-        self.webcam = webcam
-        self.webcam_addr = webcam_addr
-        if webcam: # if use web camera
-            imgp = []
-            vidp = [int(webcam_addr) if webcam_addr.isdigit() else webcam_addr]
+    def __init__(self, path):
+        p = str(Path(path).resolve())  # os-agnostic absolute path
+        if os.path.isdir(p):
+            files = sorted(glob.glob(os.path.join(p, '**/*.*'), recursive=True))  # dir
+        elif os.path.isfile(p):
+            files = [p]  # files
         else:
-            p = str(Path(path).resolve())  # os-agnostic absolute path
-            if os.path.isdir(p):
-                files = sorted(glob.glob(os.path.join(p, '**/*.*'), recursive=True))  # dir
-            elif os.path.isfile(p):
-                files = [p]  # files
-            else:
-                raise FileNotFoundError(f'Invalid path {p}')
-            imgp = [i for i in files if i.split('.')[-1] in IMG_FORMATS]
-            vidp = [v for v in files if v.split('.')[-1] in VID_FORMATS]
+            raise FileNotFoundError(f'Invalid path {p}')
+        imgp = [i for i in files if i.split('.')[-1] in IMG_FORMATS]
+        vidp = [v for v in files if v.split('.')[-1] in VID_FORMATS]
         self.files = imgp + vidp
         self.nf = len(self.files)
         self.type = 'image'
-        if len(vidp) > 0:
+        if any(vidp):
             self.add_video(vidp[0])  # new video
         else:
             self.cap = None
-
-    # @staticmethod
-    def checkext(self, path):
-        if self.webcam:
-            file_type = 'video'
-        else:
-            file_type = 'image' if path.split('.')[-1].lower() in IMG_FORMATS else 'video'
+    @staticmethod
+    def checkext(path):
+        file_type = 'image' if path.split('.')[-1].lower() in IMG_FORMATS else 'video'
         return file_type
-
     def __iter__(self):
         self.count = 0
         return self
-
     def __next__(self):
         if self.count == self.nf:
             raise StopIteration
@@ -654,11 +638,9 @@ class LoadData:
             self.count += 1
             img = cv2.imread(path)  # BGR
         return img, path, self.cap
-
     def add_video(self, path):
         self.frame = 0
         self.cap = cv2.VideoCapture(path)
         self.frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
     def __len__(self):
         return self.nf  # number of files

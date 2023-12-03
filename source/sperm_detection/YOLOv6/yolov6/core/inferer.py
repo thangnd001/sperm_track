@@ -21,7 +21,7 @@ from yolov6.utils.nms import non_max_suppression
 from yolov6.utils.torch_utils import get_model_info
 
 class Inferer:
-    def __init__(self, source, webcam, webcam_addr, weights, device, yaml, img_size, half):
+    def __init__(self, source, weights, device, yaml, img_size, half):
 
         self.__dict__.update(locals())
 
@@ -50,10 +50,9 @@ class Inferer:
             self.model(torch.zeros(1, 3, *self.img_size).to(self.device).type_as(next(self.model.model.parameters())))  # warmup
 
         # Load data
-        self.webcam = webcam
-        self.webcam_addr = webcam_addr
-        self.files = LoadData(source, webcam, webcam_addr)
+        self.files = LoadData(source)
         self.source = source
+
 
 
     def model_switch(self, model, img_size):
@@ -62,17 +61,15 @@ class Inferer:
         for layer in model.modules():
             if isinstance(layer, RepVGGBlock):
                 layer.switch_to_deploy()
-            elif isinstance(layer, torch.nn.Upsample) and not hasattr(layer, 'recompute_scale_factor'):
-                layer.recompute_scale_factor = None  # torch 1.11.0 compatibility
 
         LOGGER.info("Switch model to deploy modality.")
 
-    def infer(self, conf_thres, iou_thres, classes, agnostic_nms, max_det, save_dir, save_txt, save_img, hide_labels, hide_conf, save_bb, view_img=True):
+    def infer(self, conf_thres, iou_thres, classes, agnostic_nms, max_det, save_dir, save_txt, save_img, hide_labels, hide_conf, view_img=True):
         ''' Model Inference and results visualization '''
         vid_path, vid_writer, windows = None, None, []
         fps_calculator = CalcFPS()
         for img_src, img_path, vid_cap in tqdm(self.files):
-            img, img_src = self.process_image(img_src, self.img_size, self.stride, self.half)
+            img, img_src = self.precess_image(img_src, self.img_size, self.stride, self.half)
             img = img.to(self.device)
             if len(img.shape) == 3:
                 img = img[None]
@@ -82,15 +79,11 @@ class Inferer:
             det = non_max_suppression(pred_results, conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det)[0]
             t2 = time.time()
 
-            if self.webcam:
-                save_path = osp.join(save_dir, self.webcam_addr)
-                txt_path = osp.join(save_dir, self.webcam_addr)
-            else:
-                # Create output files in nested dirs that mirrors the structure of the images' dirs
-                rel_path = osp.relpath(osp.dirname(img_path), osp.dirname(self.source))
-                save_path = osp.join(save_dir, rel_path, osp.basename(img_path))  # im.jpg
-                txt_path = osp.join(save_dir, rel_path, osp.splitext(osp.basename(img_path))[0])
-                os.makedirs(osp.join(save_dir, rel_path), exist_ok=True)
+            # Create output files in nested dirs that mirrors the structure of the images' dirs
+            rel_path = osp.relpath(osp.dirname(img_path), osp.dirname(self.source))
+            save_path = osp.join(save_dir, rel_path, osp.basename(img_path))  # im.jpg
+            txt_path = osp.join(save_dir, rel_path, osp.splitext(osp.basename(img_path))[0])
+            os.makedirs(osp.join(save_dir, rel_path), exist_ok=True)
 
             gn = torch.tensor(img_src.shape)[[1, 0, 1, 0]]  # normalization gain whwh
             img_ori = img_src.copy()
@@ -103,17 +96,16 @@ class Inferer:
                 det[:, :4] = self.rescale(img.shape[2:], det[:, :4], img_src.shape).round()
                 for *xyxy, conf, cls in reversed(det):
                     if save_txt:  # Write to file
+                        pp = torch.tensor(xyxy).view(1, 4).view(-1).tolist()  # p1, p2 = (xyxy[0], xyxy[1]), (xyxy[2], xyxy[3])
+                        line = (cls, *pp, conf)
+                        with open(txt_path + '-2p.txt', 'a') as f:
+                            f.write(('%g ' * len(line)).rstrip() % line + '\n')
+
                         xywh = (self.box_convert(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
                         line = (cls, *xywh, conf)
                         with open(txt_path + '.txt', 'a') as f:
                             f.write(('%g ' * len(line)).rstrip() % line + '\n')
 
-                    if save_bb:  # Write to file
-                        xywh = (self.box_convert(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
-                        line = (cls, *xywh)
-                        with open(txt_path + '.txt', 'a') as f:
-                            f.write(('%g ' * len(line)).rstrip() % line + '\n')
-                            
                     if save_img:
                         class_num = int(cls)  # integer class
                         label = None if hide_labels else (self.class_names[class_num] if hide_conf else f'{self.class_names[class_num]} {conf:.2f}')
@@ -121,6 +113,15 @@ class Inferer:
                         self.plot_box_and_label(img_ori, max(round(sum(img_ori.shape) / 2 * 0.003), 2), xyxy, label, color=self.generate_colors(class_num, True))
 
                 img_src = np.asarray(img_ori)
+
+            # save frames from video or stream
+            if save_img and self.files.type != 'image':  # 'video' or 'stream'
+                path_frames = os.path.join(save_dir, osp.splitext(osp.basename(img_path))[0] + "-frames")
+                if not os.path.exists(path_frames):
+                    os.makedirs(path_frames)  # created folder save frames
+                cnt_file = len(os.listdir(path_frames))
+                frame_name = osp.splitext(osp.basename(img_path))[0] + f"-{cnt_file}.png"
+                cv2.imwrite(os.path.join(path_frames, frame_name), img_src)
 
             # FPS counter
             fps_calculator.update(1.0 / (t2 - t1))
@@ -165,7 +166,7 @@ class Inferer:
                     vid_writer.write(img_src)
 
     @staticmethod
-    def process_image(img_src, img_size, stride, half):
+    def precess_image(img_src, img_size, stride, half):
         '''Process image before image inference.'''
         image = letterbox(img_src, img_size, stride=stride)[0]
         # Convert

@@ -1,8 +1,14 @@
+import sys
+import os
+
 import torch
 import numpy as np
 import math
 import cv2
 
+ROOT = os.path.dirname(os.path.realpath(__file__))
+if str(ROOT) not in sys.path:
+    sys.path.append(str(ROOT))
 
 from yolov6.utils.events import load_yaml
 from yolov6.layers.common import DetectBackend
@@ -121,7 +127,7 @@ class SpermDetector():
             for *xyxy, conf, cls in reversed(det):
                 class_num = int(cls)  # integer class
                 label = f'{self.class_names[class_num]} {conf:.2f}'
-                self.plot_box_and_label(img_src, max(round(sum(img_src.shape) / 2 * 0.003), 2), xyxy, label, color=(255,0,0))
+                # self.plot_box_and_label(img_src, max(round(sum(img_src.shape) / 2 * 0.003), 2), xyxy, label, color=(255,0,0))
 
                 if self.class_names[class_num] == "S":  # is sperm
                     box = torch.tensor(xyxy).view(1, 4).view(-1).tolist()

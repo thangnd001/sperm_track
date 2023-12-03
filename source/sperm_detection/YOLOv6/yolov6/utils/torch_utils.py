@@ -84,10 +84,10 @@ def fuse_conv_and_bn(conv, bn):
 
 def fuse_model(model):
     '''Fuse convolution and batchnorm layers of the model.'''
-    from yolov6.layers.common import ConvModule
+    from yolov6.layers.common import Conv, SimConv, Conv_C3
 
     for m in model.modules():
-        if type(m) is ConvModule and hasattr(m, "bn"):
+        if (type(m) is Conv or type(m) is SimConv or type(m) is Conv_C3) and hasattr(m, "bn"):
             m.conv = fuse_conv_and_bn(m.conv, m.bn)  # update conv
             delattr(m, "bn")  # remove batchnorm
             m.forward = m.forward_fuse  # update forward
@@ -99,7 +99,7 @@ def get_model_info(model, img_size=640):
     Code base on https://github.com/Megvii-BaseDetection/YOLOX/blob/main/yolox/utils/model_utils.py
     """
     from thop import profile
-    stride = 64 #32
+    stride = 32
     img = torch.zeros((1, 3, stride, stride), device=next(model.parameters()).device)
 
     flops, params = profile(deepcopy(model), inputs=(img,), verbose=False)

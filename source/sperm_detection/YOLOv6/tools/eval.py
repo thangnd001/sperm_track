@@ -12,7 +12,7 @@ if str(ROOT) not in sys.path:
 
 from yolov6.core.evaler import Evaler
 from yolov6.utils.events import LOGGER
-from yolov6.utils.general import increment_name, check_img_size
+from yolov6.utils.general import increment_name
 from yolov6.utils.config import Config
 
 def boolean_string(s):
@@ -33,8 +33,11 @@ def get_args_parser(add_help=True):
     parser.add_argument('--half', default=False, action='store_true', help='whether to use fp16 infer')
     parser.add_argument('--save_dir', type=str, default='runs/val/', help='evaluation save dir')
     parser.add_argument('--name', type=str, default='exp', help='save evaluation results to save_dir/name')
-    parser.add_argument('--shrink_size', type=int, default=0, help='load img resize when test')
-    parser.add_argument('--infer_on_rect', default=True, type=boolean_string, help='default to run with rectangle image to boost speed.')
+    parser.add_argument('--test_load_size', type=int, default=640, help='load img resize when test')
+    parser.add_argument('--letterbox_return_int', default=False, action='store_true', help='return int offset for letterbox')
+    parser.add_argument('--scale_exact', default=False, action='store_true', help='use exact scale size to scale coords')
+    parser.add_argument('--force_no_pad', default=False, action='store_true', help='for no extra pad in letterbox')
+    parser.add_argument('--not_infer_on_rect', default=False, action='store_true', help='default to use rect image size to boost infer')
     parser.add_argument('--reproduce_640_eval', default=False, action='store_true', help='whether to reproduce 640 infer result, overwrite some config')
     parser.add_argument('--eval_config_file', type=str, default='./configs/experiment/eval_640_repro.py', help='config file for repro 640 infer result')
     parser.add_argument('--do_coco_metric', default=True, type=boolean_string, help='whether to use pycocotool to metric, set False to close')
@@ -43,9 +46,6 @@ def get_args_parser(add_help=True):
     parser.add_argument('--plot_confusion_matrix', default=False, action='store_true', help='whether to save confusion matrix plots when do pr metric, might cause no harm warning print')
     parser.add_argument('--verbose', default=False, action='store_true', help='whether to print metric on each class')
     parser.add_argument('--config-file', default='', type=str, help='experiments description file, lower priority than reproduce_640_eval')
-    parser.add_argument('--specific-shape', action='store_true', help='rectangular training')
-    parser.add_argument('--height', type=int, default=None, help='image height of model input')
-    parser.add_argument('--width', type=int, default=None, help='image width of model input')
     args = parser.parse_args()
 
     if args.config_file:
@@ -73,10 +73,13 @@ def get_args_parser(add_help=True):
         eval_model_name = os.path.splitext(os.path.basename(args.weights))[0]
         if eval_model_name not in eval_params:
             eval_model_name = "default"
-        args.shrink_size = eval_params[eval_model_name]["shrink_size"]
-        args.infer_on_rect = eval_params[eval_model_name]["infer_on_rect"]
+        args.test_load_size = eval_params[eval_model_name]["test_load_size"]
+        args.letterbox_return_int = eval_params[eval_model_name]["letterbox_return_int"]
+        args.scale_exact = eval_params[eval_model_name]["scale_exact"]
+        args.force_no_pad = eval_params[eval_model_name]["force_no_pad"]
+        args.not_infer_on_rect = eval_params[eval_model_name]["not_infer_on_rect"]
         #force params
-        #args.img_size = 640
+        args.img_size = 640
         args.conf_thres = 0.03
         args.iou_thres = 0.65
         args.task = "val"
@@ -100,9 +103,11 @@ def run(data,
         dataloader=None,
         save_dir='',
         name = '',
-        shrink_size=640,
+        test_load_size=640,
         letterbox_return_int=False,
-        infer_on_rect=False,
+        force_no_pad=False,
+        not_infer_on_rect=False,
+        scale_exact=False,
         reproduce_640_eval=False,
         eval_config_file='./configs/experiment/eval_640_repro.py',
         verbose=False,
@@ -111,15 +116,12 @@ def run(data,
         plot_curve=False,
         plot_confusion_matrix=False,
         config_file=None,
-        specific_shape=False,
-        height=640,
-        width=640
         ):
     """ Run the evaluation process
 
-    This function is the main process of evaluation, supporting image file and dir containing images.
+    This function is the main process of evaluataion, supporting image file and dir containing images.
     It has tasks of 'val', 'train' and 'speed'. Task 'train' processes the evaluation during training phase.
-    Task 'val' processes the evaluation purely and return the mAP of model.pt. Task 'speed' processes the
+    Task 'val' processes the evaluation purely and return the mAP of model.pt. Task 'speed' precesses the
     evaluation of inference speed of model.pt.
 
     """
@@ -138,18 +140,11 @@ def run(data,
     half = device.type != 'cpu' and half
     data = Evaler.reload_dataset(data, task) if isinstance(data, str) else data
 
-    # # verify imgsz is gs-multiple
-    if specific_shape:
-        height = check_img_size(height, 32, floor=256)
-        width = check_img_size(width, 32, floor=256)
-    else:
-        img_size = check_img_size(img_size, 32, floor=256)
+    # init
     val = Evaler(data, batch_size, img_size, conf_thres, \
                 iou_thres, device, half, save_dir, \
-                shrink_size, infer_on_rect,
-                verbose, do_coco_metric, do_pr_metric,
-                plot_curve, plot_confusion_matrix,
-                specific_shape=specific_shape,height=height, width=width)
+                test_load_size, letterbox_return_int, force_no_pad, not_infer_on_rect, scale_exact,
+                verbose, do_coco_metric, do_pr_metric, plot_curve, plot_confusion_matrix)
     model = val.init_model(model, weights, task)
     dataloader = val.init_data(dataloader, task)
 
