@@ -3,6 +3,7 @@ import sys
 from typing import Any
 from pathlib import Path
 from collections import Counter
+import time
 
 import cv2
 import numpy as np
@@ -13,6 +14,8 @@ from sperm_tracking.yolo_tracking.boxmot import DeepOCSORT
 
 DEBUG = True
 CATEGORIES = ["Abnormal_Sperm", "Non-Sperm", "Normal_Sperm"]
+CATEGORIES = ['Amorphous', 'Normal', 'Pyriform', 'Tapered']
+CATEGORIES = ['Normal', 'Tapered', 'Pyriform', 'Amorphous']
 
 class Processor(object):
     def __init__(
@@ -28,7 +31,7 @@ class Processor(object):
         ) -> None:
 
         # sperm process init
-        self.classificator = SpermClassification(classify_weight)
+        self.classificator = SpermClassification(classify_weight, device='/device:GPU:0', input_size=224)
         self.sperm_detector = SpermDetector(
             detection_weight,
             device,
@@ -47,7 +50,8 @@ class Processor(object):
         # init track
         tracker = DeepOCSORT(
             model_weights=Path(self.track_model_weights),
-            device="cuda",
+            device="cuda:0",
+            # device="cpu",
             fp16=self.track_fp16,
             det_thresh=0.1
         )
@@ -64,11 +68,14 @@ class Processor(object):
             frame_width = int(cap.get(3)) # float `width`
             frame_height = int(cap.get(4))
             out = cv2.VideoWriter('outputs/result.avi',cv2.VideoWriter_fourcc('M','J','P','G'), fps, frameSize=(frame_width, frame_height))
+            # out = cv2.VideoWriter('outputs/result.mp4',cv2.VideoWriter_fourcc(*'MP4V'), fps, frameSize=(frame_width, frame_height))
 
         # init frame counter
         frame_counter = 0
         
         while True:
+            start = time.time()
+            t_check = time.time()
             ret, frame = cap.read()
             frame_counter += 1
             
@@ -85,7 +92,8 @@ class Processor(object):
                                             max_det=1000
                                         )
             
-
+            print('TIME DETECT = ', time.time() - t_check)
+            t_check = time.time()
             # Tracker
             tracks = tracker.update(dets=np.array(dets.cpu()), img=img_src)
             xyxys = tracks[:, 0:4].astype('int') # float64 to int
@@ -96,6 +104,9 @@ class Processor(object):
             list_sperm_ids = []
             list_sperm_coords = []
 
+            print('TIME TRACK = ', time.time() - t_check)
+            t_check = time.time()
+
             if tracks.shape[0] != 0:
                 for xyxy, id, conf, cls in zip(xyxys, ids, confs, clss):
                     x_cen = xyxy[0] + (xyxy[2] - xyxy[0]) / 2
@@ -105,9 +116,12 @@ class Processor(object):
 
                     # Draw
                     cv2.rectangle(frame, (xyxy[0], xyxy[1]), (xyxy[2], xyxy[3]),(0, 255, 0), 1)
-                    cv2.putText(frame, '{}'.format(id), (xyxy[0], xyxy[1]), cv2.FONT_HERSHEY_COMPLEX_SMALL, 0.5, (0, 255, 1), 1)
-                    cv2.putText(frame, 'Type : {} : {:.2f}'.format(self.sperm_detector.class_names[cls], conf), (xyxy[0], xyxy[1] - 20), cv2.FONT_HERSHEY_COMPLEX_SMALL, 0.5, (0, 255, 0), 1)
+                    cv2.putText(frame, '{}'.format(id), (xyxy[0], xyxy[1]), cv2.FONT_HERSHEY_COMPLEX_SMALL, 0.5, (255, 0, 0), 1)
+                    # cv2.putText(frame, 'Type : {} : {:.2f}'.format(self.sperm_detector.class_names[cls], conf), (xyxy[0], xyxy[1] - 20), cv2.FONT_HERSHEY_COMPLEX_SMALL, 0.5, (0, 255, 0), 1)
             out.write(frame)
+
+            print('TIME WRITE TRACK = ', time.time() - t_check)
+            t_check = time.time()
 
             # Sperm classification
             list_sperm_types = self.classificator(crop_objs, self.batch_size)
@@ -125,6 +139,8 @@ class Processor(object):
                     sperm_statistic[sperm_id]['frame_track'].pop(-1)
                     sperm_statistic[sperm_id]['frame_track'].append(frame_counter)
                     sperm_statistic[sperm_id]['list_frame_time'].append(frame_counter)
+            
+            print('TIME INFER = ', time.time() - start)
 
         return self.statistic(sperm_statistic, fps, frame_height, frame_width)
         
@@ -153,7 +169,7 @@ class Processor(object):
                     distance += np.linalg.norm(np.array(coord_convert, dtype=float) - np.array(current_coord, dtype=float))
                     current_coord = coord_convert
                     current_frame_time = frame_time
-            print('DISTANCE = ', distance)
+            # print('DISTANCE = ', distance)/
             return distance / (num_frame / fps)
 
         def get_type(list_type: list):
@@ -201,7 +217,17 @@ class Processor(object):
             sperm_type = CATEGORIES[get_type(value['type'])]
             result_info = {'type': sperm_type, 'speed': speed}
             list_sperm_statistic[sperm_id] = result_info
+
+        speed_result = []
+        statistic_final_Result = {}
+        for type_sperm in CATEGORIES:
+            statistic_final_Result[type_sperm] = 0
+        for sperm_id, value in list_sperm_statistic.items():
+            statistic_final_Result[value['type']] += 1
+            speed_result.append(int(value['speed']))
+        
+        final_result = [speed_result, statistic_final_Result]
                    
-        return list_sperm_statistic
+        return final_result
 
         

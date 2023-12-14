@@ -112,6 +112,7 @@ class SpermDetector():
         return image, img_src
 
     def infer(self, source, conf_thres=0.25, iou_thres=0.45, classes=None, agnostic_nms=False, max_det=1000):
+        ratio = 0.6
         img, img_src = self.precess_image(source, self.img_size, self.stride, self.half)
         img = img.to(self.device)
 
@@ -122,6 +123,7 @@ class SpermDetector():
         pred_results = self.model(img)
         det = non_max_suppression(pred_results, conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det)[0]
         img_frame_ori, crop_objs = img_src.copy(), []
+        h_original, w_original = img_frame_ori.shape[:2]
         if len(det):
             det[:, :4] = self.rescale(img.shape[2:], det[:, :4], img_src.shape).round()
             for *xyxy, conf, cls in reversed(det):
@@ -132,6 +134,12 @@ class SpermDetector():
                 if self.class_names[class_num] == "S":  # is sperm
                     box = torch.tensor(xyxy).view(1, 4).view(-1).tolist()
                     x1, y1, x2, y2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
+                    w, h = x2 - x1, y2 - y1
+                    x1 = int(max(0, x1 - ratio * w))
+                    x2 = int(min(w_original, x2 + ratio * w))
+                    y1 = int(max(0, y1 - ratio * h))
+                    y2 = int(min(h_original,  y2 + ratio * h))
+
                     crop_img = img_frame_ori[y1:y2, x1:x2]
                     dim = (40, 40)
                     crop_img_resize = cv2.resize(crop_img, dim, interpolation=cv2.INTER_LINEAR)

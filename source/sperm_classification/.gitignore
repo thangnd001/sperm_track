@@ -1,0 +1,6 @@
+.git/*
+.idea/*
+venv/*
+runs/results/*
+runs/training/*
+runs/k-fold/*
