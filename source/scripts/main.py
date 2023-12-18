@@ -16,6 +16,7 @@ DEBUG = True
 CATEGORIES = ["Abnormal_Sperm", "Non-Sperm", "Normal_Sperm"]
 CATEGORIES = ['Amorphous', 'Normal', 'Pyriform', 'Tapered']
 CATEGORIES = ['Normal', 'Tapered', 'Pyriform', 'Amorphous']
+CATEGORIES = ['Normal', 'Abnormal']
 
 class Processor(object):
     def __init__(
@@ -31,7 +32,7 @@ class Processor(object):
         ) -> None:
 
         # sperm process init
-        self.classificator = SpermClassification(classify_weight, device='/device:GPU:0', input_size=224)
+        self.classificator = SpermClassification(classify_weight, device='/device:GPU:0', input_size=40)
         self.sperm_detector = SpermDetector(
             detection_weight,
             device,
@@ -79,18 +80,21 @@ class Processor(object):
             ret, frame = cap.read()
             frame_counter += 1
             
-            if not ret:
-                break
+            # if not ret:
+            #     break
 
             # Detector
-            dets, img_src, crop_objs = self.sperm_detector.infer(
-                                            source=frame,
-                                            conf_thres=0.25,
-                                            iou_thres=0.45,
-                                            classes=[0],
-                                            agnostic_nms=True,
-                                            max_det=1000
-                                        )
+            try:
+                dets, img_src, crop_objs = self.sperm_detector.infer(
+                                                source=frame,
+                                                conf_thres=0.25,
+                                                iou_thres=0.45,
+                                                classes=[0],
+                                                agnostic_nms=True,
+                                                max_det=1000
+                                            )
+            except:
+                break
             
             print('TIME DETECT = ', time.time() - t_check)
             t_check = time.time()
@@ -103,7 +107,7 @@ class Processor(object):
             inds = tracks[:, 7].astype('int') # float64 to int
             list_sperm_ids = []
             list_sperm_coords = []
-
+            
             print('TIME TRACK = ', time.time() - t_check)
             t_check = time.time()
 
@@ -113,19 +117,16 @@ class Processor(object):
                     y_cen = xyxy[1] + (xyxy[3] - xyxy[1]) / 2
                     list_sperm_ids.append(id)
                     list_sperm_coords.append((x_cen, y_cen))
-
-                    # Draw
-                    cv2.rectangle(frame, (xyxy[0], xyxy[1]), (xyxy[2], xyxy[3]),(0, 255, 0), 1)
-                    cv2.putText(frame, '{}'.format(id), (xyxy[0], xyxy[1]), cv2.FONT_HERSHEY_COMPLEX_SMALL, 0.5, (255, 0, 0), 1)
-                    # cv2.putText(frame, 'Type : {} : {:.2f}'.format(self.sperm_detector.class_names[cls], conf), (xyxy[0], xyxy[1] - 20), cv2.FONT_HERSHEY_COMPLEX_SMALL, 0.5, (0, 255, 0), 1)
-            out.write(frame)
+            
 
             print('TIME WRITE TRACK = ', time.time() - t_check)
             t_check = time.time()
 
             # Sperm classification
             list_sperm_types = self.classificator(crop_objs, self.batch_size)
-            for sperm_id, sperm_type, coord in zip(list_sperm_ids, list_sperm_types, list_sperm_coords):
+            for index, (det_ind, sperm_type) in enumerate(zip(inds, list_sperm_types)):
+                sperm_id = list_sperm_ids[det_ind]
+                coord = list_sperm_coords[det_ind]
                 if sperm_id not in sperm_statistic:
                     sperm_statistic[sperm_id] = {
                         'type': [sperm_type], 
@@ -139,6 +140,13 @@ class Processor(object):
                     sperm_statistic[sperm_id]['frame_track'].pop(-1)
                     sperm_statistic[sperm_id]['frame_track'].append(frame_counter)
                     sperm_statistic[sperm_id]['list_frame_time'].append(frame_counter)
+                
+                # Draw
+                xyxy = xyxys[index]
+                cv2.rectangle(frame, (xyxy[0], xyxy[1]), (xyxy[2], xyxy[3]),(0, 255, 0) if sperm_type == 0 else (0, 0, 255), 1)
+                cv2.putText(frame, '{}'.format(sperm_id), (xyxy[0], xyxy[1]), cv2.FONT_HERSHEY_COMPLEX_SMALL, 0.5, (255, 0, 0), 1)
+                # cv2.putText(frame, 'Type : {} : {:.2f}'.format(self.sperm_detector.class_names[cls], conf), (xyxy[0], xyxy[1] - 20), cv2.FONT_HERSHEY_COMPLEX_SMALL, 0.5, (0, 255, 0), 1)
+            out.write(frame)
             
             print('TIME INFER = ', time.time() - start)
 

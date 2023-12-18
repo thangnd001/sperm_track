@@ -35,6 +35,7 @@ parser.add_argument("-status_ckpt", default=True, type=bool, help="True or False
 parser.add_argument("-status_early_stop", default=True, type=bool, help="True or False")
 parser.add_argument("-test_size", default=0.2, type=float, help="split data train")
 parser.add_argument("-mode_labels", default="category", help="mode labels train test (binary or category)")
+parser.add_argument("-weight_path", default="source/sperm_classification/model/sperm/hushem-version-0.1-weights-best-k-fold-2.h5", type=str)
 args = vars(parser.parse_args())
 
 # Set up parameters
@@ -162,6 +163,7 @@ print("VALID : ", valid_data.shape, "-", labels_valid_one_hot.shape)
 print("TEST : ", global_dataset_test.shape, "-", labels_test_one_hot.shape)
 
 model.set_weights(weights_init)
+# model.load_weights(args['weight_path'])
 model_history = model.fit(train_data, labels_train_one_hot, epochs=epochs, batch_size=bath_size,
                           verbose=verbose, validation_data=(valid_data, labels_valid_one_hot),
                           shuffle=True, callbacks=callbacks_list)

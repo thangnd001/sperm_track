@@ -7,6 +7,6 @@ if __name__ == '__main__':
     UI.launch(share=True)
 
 # if __name__ == '__main__':
-    # from sperm_tracking_ui import processor
-    # video_url = 'data/data_25s.avi'
-    # print(processor(video_url))
+#     from sperm_tracking_ui import processor
+#     video_url = 'data/sperm-ex.mp4'
+#     print(processor(video_url))

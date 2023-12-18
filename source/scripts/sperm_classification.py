@@ -1,4 +1,5 @@
 from typing import Any
+import os
 
 import cv2
 import numpy as np
@@ -39,7 +40,7 @@ class SpermClassification(object):
 
 			# Model base
 			self.model = model_classification(
-				input_layer=(input_size,input_size,3),
+				input_layer=(input_size,input_size,1),
 				num_class=4,
 				activation_dense='softmax',
 				activation_block='LeakyReLU'
@@ -66,8 +67,13 @@ class SpermClassification(object):
 				y_predict = self.model.predict(batch)
 				# print("Y PREDICT = ", y_predict)
 				y_target = np.argmax(y_predict, axis=1)
+				
+				# limit label
+				y_target = np.clip(y_target, 0, 1)
 				list_predict.extend(y_target)
 		# print('LIST PREDICT = ', list_predict)
+		print('TYPE _PREDICT = ', type(y_target))
+		print("LIST PREDICT = ", list_predict)
 		return list_predict
 	
 	def preprocess(self, input, input_size:int=150) -> Any:
@@ -80,14 +86,15 @@ class SpermClassification(object):
 			img = cv2.resize(input, dsize=(input_size, input_size))
 		
 		# Convert gray
-		# img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+		img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+		img = np.expand_dims(img, axis=-1)
 		
-		if True:
-			import os
+		if True and len(os.listdir("sperm_crop")) < 68:
 			cv2.imwrite(f'sperm_crop/sperm_crop_{len(os.listdir("sperm_crop")) + 1}.png', img)
 		# print("OK")
 		# return preprocess_input(image.img_to_array(img))
-		return image.img_to_array(img, dtype=float) / 255.0
+		# return image.img_to_array(img, dtype=float) / 255.0
+		return image.img_to_array(img, dtype=float)
 	
 	def init_batch(self, inputs, input_size:int = 40, batch_size:int=96) -> Any:
 		list_batchs = []
@@ -95,6 +102,7 @@ class SpermClassification(object):
 		
 		for i, image in enumerate(inputs, start=0):
 			img_convert = self.preprocess(image, input_size)
+			# print('IMG SHAPE = ', img_convert.shape)
 			if i % batch_size != 0:
 				batch.append(img_convert)
 			else:

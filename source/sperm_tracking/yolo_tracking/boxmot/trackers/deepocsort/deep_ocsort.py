@@ -367,7 +367,7 @@ class DeepOCSort(object):
         assert isinstance(img, np.ndarray), f"Unsupported 'img' input type '{type(img)}', valid format is np.ndarray"
         assert len(dets.shape) == 2, "Unsupported 'dets' dimensions, valid number of dimensions is two"
         assert dets.shape[1] == 6, "Unsupported 'dets' 2nd dimension lenght, valid lenghts is 6"
-
+        # print("LEN DET = ", len(dets))
         self.frame_count += 1
         self.height, self.width = img.shape[:2]
 
@@ -376,6 +376,10 @@ class DeepOCSort(object):
         assert dets.shape[1] == 7
         remain_inds = scores > self.det_thresh
         dets = dets[remain_inds]
+
+        # get coord
+        split_coord = dets[:,:4]
+        coords_det = [[int(coord[0]), int(coord[1]), int(coord[2]), int(coord[3])] for coord in split_coord]
 
         # appearance descriptor extraction
         if self.embedding_off or dets.shape[0] == 0:
@@ -494,6 +498,7 @@ class DeepOCSort(object):
             )
             self.trackers.append(trk)
         i = len(self.trackers)
+        # counter_append = 0
         for trk in reversed(self.trackers):
             if trk.last_observation.sum() < 0:
                 d = trk.get_state()[0]
@@ -503,13 +508,19 @@ class DeepOCSort(object):
                 we didn't notice significant difference here
                 """
                 d = trk.last_observation[:4]
-            if (trk.time_since_update < 1) and (trk.hit_streak >= self.min_hits or self.frame_count <= self.min_hits):
+            # if (trk.time_since_update < 1) and (trk.hit_streak >= self.min_hits or self.frame_count <= self.min_hits):
                 # +1 as MOT benchmark requires positive
+                # ret.append(np.concatenate((d, [trk.id], [trk.conf], [trk.cls], [trk.det_ind])).reshape(1, -1))
+            if list(d) in coords_det:
+                # counter_append += 1
                 ret.append(np.concatenate((d, [trk.id], [trk.conf], [trk.cls], [trk.det_ind])).reshape(1, -1))
+
             i -= 1
             # remove dead tracklet
             if trk.time_since_update > self.max_age:
                 self.trackers.pop(i)
+        # print("LEN RET = ", len(ret))
+        # print("COUNTER = ", counter_append)
         if len(ret) > 0:
             return np.concatenate(ret)
         return np.array([])

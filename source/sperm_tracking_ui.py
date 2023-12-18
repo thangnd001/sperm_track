@@ -17,7 +17,7 @@ ROOT_DIR = os.path.dirname(os.path.realpath(__file__))
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--classify_weight',default='sperm_classification/model/sperm/hushem-version-0.1-weights-best-k-fold-2.h5', type=str)
+    parser.add_argument('--classify_weight',default='sperm_classification/runs/training/HuSHeM_dataset/version-0.0/model-save/model-HuSHeM_dataset-version-0.0.h5', type=str)
     parser.add_argument('--detection_weight', default='sperm_detection/weights/best_ckpt.pt', type=str)
     parser.add_argument('--device', default='0', type=str)
     parser.add_argument('--yaml', default='sperm_detection/YOLOv6/data/miamia-sperm.yaml', type=str)
@@ -60,14 +60,15 @@ speed_statistic = []
 
 
 def eval(video):
-    global statistic_global
-    global speed_statistic
-    output = processor(video)
+    # global statistic_global
+    # global speed_statistic
+    # output = processor(video)
     
-    statistic_global = output[1]
-    speed_statistic = output[0]
-    
+    # statistic_global = output[1]
+    # speed_statistic = output[0]
+    print("VIDEO = ", video)    
     return f'outputs/result.avi'
+
 
 
 def stop():
@@ -129,6 +130,9 @@ def make_plot(plot_type):
 def main_ui():
     
     with gr.Blocks() as demo:
+        with gr.Blocks():
+            with gr.Row():
+                label = gr.Label("Sperm Tracking", show_label=False, scale=25, container=False)
         # Process video
         with gr.Blocks() as process_video:
             with gr.Row():
@@ -137,7 +141,7 @@ def main_ui():
                 
             with gr.Row():
                 submit_btn = gr.Button(value='Submit', variant='primary')
-                clear_btn = gr.Button(value='Clear', variant='primary')
+                # clear_btn = gr.Button(value='Clear', variant='primary')
             
         # Bar result
         with gr.Blocks() as statistic_result:

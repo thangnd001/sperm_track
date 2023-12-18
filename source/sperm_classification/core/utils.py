@@ -2,6 +2,7 @@ import os
 import pickle
 import re
 import matplotlib.pyplot as plt
+import cv2
 import numpy as np
 import pandas as pd
 import seaborn as sn
@@ -116,6 +117,16 @@ def save_dump(file_path, data, labels):
     pass
 
 
+def convert_gray(list_image):
+    list_image = list_image.copy()
+    results = []
+    for image in list_image:
+        img_cv = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        img_cv = np.expand_dims(img_cv, axis=-1)
+        results.append(img_cv)
+
+    return np.array(results)
+
 def load_data(path_file):
     file = open(path_file, 'rb')
     # dump information to that file
@@ -124,6 +135,11 @@ def load_data(path_file):
     file.close()
     print(pixels.shape)
     print(labels.shape)
+    print("TYPE DATA = ", type(pixels))
+    
+    # convert gray
+    pixels = convert_gray(pixels)
+    print(pixels.shape)
     return pixels, labels
 
 
