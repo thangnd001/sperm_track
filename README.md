@@ -35,12 +35,7 @@ This guide explains how to set up and use the Human Sperm Analysis Tool for anal
 
 1. **Clone the Repository**
    ```bash
-   git clone 
-   
-
-
-
-   
+   git clone https://github.com/thangnd001/sperm_track.git
    cd sperm_strack
    git checkout dev
    ```
