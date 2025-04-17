@@ -10,17 +10,16 @@ import altair as alt
 import gradio as gr
 import numpy as np
 import pandas as pd
-import cv2
 
 from scripts.main import Processor
 
 
-# Directory setup
 ROOT_DIR = os.path.dirname(os.path.realpath(__file__))
+
+# Create a directory for assets if it doesn't exist
 ASSETS_DIR = os.path.join(ROOT_DIR, "assets")
 os.makedirs(ASSETS_DIR, exist_ok=True)
 LOGO_PATH = os.path.join(ASSETS_DIR, "haui_logo.jpg")
-MEDICAL_ICON_PATH = os.path.join(ASSETS_DIR, "medical_icon.png")
 
 # Download the logo if it doesn't exist
 def ensure_logo_exists():
@@ -35,18 +34,6 @@ def ensure_logo_exists():
             print(f"Error downloading logo: {e}")
     return LOGO_PATH
 
-# Download the medical icon if it doesn't exist
-def ensure_medical_icon_exists():
-    if not os.path.exists(MEDICAL_ICON_PATH):
-        try:
-            # Save the caduceus medical symbol
-            response = requests.get("https://static.wixstatic.com/media/9d8ed5_f0d7ea50fd804ba9a93d9f34029d8695~mv2.png/v1/fill/w_500,h_500,al_c,q_85,usm_0.66_1.00_0.01,enc_avif,quality_auto/9d8ed5_f0d7ea50fd804ba9a93d9f34029d8695~mv2.png")
-            img = Image.open(BytesIO(response.content))
-            img.save(MEDICAL_ICON_PATH)
-            print(f"Medical icon downloaded and saved to {MEDICAL_ICON_PATH}")
-        except Exception as e:
-            print(f"Error downloading medical icon: {e}")
-    return MEDICAL_ICON_PATH
 
 def get_args():
     parser = argparse.ArgumentParser()
@@ -81,75 +68,24 @@ def get_args():
         track_model_weights,
         track_fp16,
         batch_size
-    )
+        )
     
 # Initialize processor
 processor = Processor(*get_args())
 statistic_global = {}
 speed_statistic = []
 
+
 def eval(video):
     global statistic_global
     global speed_statistic
+    output = processor(video)
     
-    # Create outputs directory if it doesn't exist
-    os.makedirs('outputs', exist_ok=True)
-    
-    try:
-        # Process the video
-        output = processor(video)
-        
-        # Store statistics
-        statistic_global = output[1]
-        speed_statistic = output[0]
-        
-        # Get output path
-        output_path = 'outputs/result.avi'
-        mp4_path = 'outputs/result.mp4'
-        
-        # Check if file exists
-        if os.path.exists(output_path):
-            # Convert AVI to MP4 for better compatibility with web browsers
-            try:
-                # Read the AVI file
-                cap = cv2.VideoCapture(output_path)
-                if not cap.isOpened():
-                    print(f"Error: Could not open {output_path}")
-                    return output_path  # Return original path as fallback
-                
-                # Get video properties
-                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                fps = cap.get(cv2.CAP_PROP_FPS)
-                
-                # Create MP4 writer
-                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                out = cv2.VideoWriter(mp4_path, fourcc, fps, (width, height))
-                
-                # Process frame by frame
-                while True:
-                    ret, frame = cap.read()
-                    if not ret:
-                        break
-                    out.write(frame)
-                
-                # Release resources
-                cap.release()
-                out.release()
-                
-                print(f"Successfully converted video to MP4: {mp4_path}")
-                return mp4_path
-                
-            except Exception as e:
-                print(f"Error converting video to MP4: {str(e)}")
-                return output_path  # Return original path as fallback
-        else:
-            print(f"Warning: Output file not found at {output_path}")
-            return None
-            
-    except Exception as e:
-        print(f"Error processing video: {str(e)}")
-        return None
+    statistic_global = output[1]
+    speed_statistic = output[0]
+    print("VIDEO = ", video)    
+    return f'outputs/result.avi'
+
 
 def make_plot(plot_type):
     if plot_type == "Types of sperm":
@@ -230,10 +166,10 @@ def make_plot(plot_type):
         
         return bar, source
 
+
 def main_ui():
-    # Make sure we have the logo and medical icon
+    # Make sure we have the logo
     logo_path = ensure_logo_exists()
-    medical_icon_path = ensure_medical_icon_exists()
     
     # Create custom theme
     theme = gr.themes.Monochrome(
@@ -255,34 +191,27 @@ def main_ui():
         container_radius="12px",
         panel_background_fill="#ffffff"
     )
+    
     with gr.Blocks(theme=theme, css="""
         #app-container {
             max-width: 1200px;
             margin: 0 auto;
             padding: 20px;
-            background-color: #1e40af; /* Changed to blue */
-            color: white; /* Changed to white */
         }
         .header-container {
             display: flex;
             align-items: center;
-            justify-content: space-between;
+            justify-content: center;
             margin-bottom: 30px;
             padding: 15px;
-            background-color: #2563eb; /* Changed to lighter blue */
+            background-color: white;
             border-radius: 12px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
-            color: white; /* Changed to white */
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
         }
         .logo-container {
+            margin-right: 25px;
             display: flex;
             justify-content: center;
-            align-items: center;
-        }
-        .logo-container img {
-            object-fit: contain;
-            max-height: 120px;
-            max-width: 100%;
         }
         .title-container {
             text-align: center;
@@ -291,25 +220,24 @@ def main_ui():
             font-size: 32px;
             font-weight: bold;
             margin: 0;
-            color: white !important; /* Changed to white */
+            color: #1e3a8a;
             text-align: center;
         }
         .app-subtitle {
             font-size: 18px;
             margin: 10px 0 0 0;
-            color: white !important; /* Changed to white */
+            color: #475569;
             text-align: center;
         }
         .container {
             margin: 20px 0;
             padding: 20px;
             border-radius: 12px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
-            background-color: #3b82f6; /* Changed to medium blue */
-            color: white; /* Changed to white */
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            background-color: white;
         }
         .section-title {
-            color: white; /* Changed to white */
+            color: #1e3a8a;
             font-size: 22px;
             font-weight: 600;
             margin-bottom: 15px;
@@ -319,11 +247,11 @@ def main_ui():
             margin-top: 30px;
             text-align: center;
             font-size: 14px;
-            color: white; /* Changed to white */
+            color: #64748b;
             padding: 15px;
-            background-color: #2563eb; /* Changed to lighter blue */
+            background-color: white;
             border-radius: 12px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
         }
         .button-group {
             display: flex;
@@ -334,7 +262,7 @@ def main_ui():
         with gr.Column(elem_id="app-container"):
             # Header with logo and title
             with gr.Row(elem_classes="header-container"):
-                with gr.Column(scale=1, min_width=120, elem_classes="logo-container"):
+                with gr.Column(scale=1, min_width=150, elem_classes="logo-container"):
                     gr.Image(logo_path, show_label=False, height=120)
                 with gr.Column(scale=3, elem_classes="title-container"):
                     gr.HTML(
@@ -345,8 +273,6 @@ def main_ui():
                         </div>
                         """
                     )
-                with gr.Column(scale=1, min_width=120, elem_classes="logo-container"):
-                    gr.Image(medical_icon_path, show_label=False, height=120)
             
             # Process video section
             with gr.Box(elem_classes="container"):

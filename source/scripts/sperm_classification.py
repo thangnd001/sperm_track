@@ -4,7 +4,8 @@ import os
 import cv2
 import numpy as np
 import tensorflow as tf
-from keras.preprocessing import image
+# from keras.preprocessing import image
+from tensorflow.keras.preprocessing import image
 from tensorflow.keras.preprocessing.image import img_to_array
 from tensorflow.keras.preprocessing.image import load_img
 from keras.applications.densenet import preprocess_input
@@ -19,14 +20,17 @@ class SpermClassification(object):
 		"""
 		# Set memory allocation
 		gpus = tf.config.list_physical_devices('GPU')
+		print("GPU B = ", gpus)
 		if gpus:
 			# Create 2 virtual GPUs with 1GB memory each
 			try:
 				tf.config.set_logical_device_configuration(
 					gpus[0],
-					[tf.config.LogicalDeviceConfiguration(memory_limit=1024*5)])
+					[tf.config.LogicalDeviceConfiguration(memory_limit=1024*3)])
+				print("GPU = ", gpus[0])
 				logical_gpus = tf.config.list_logical_devices('GPU')
 				print(len(gpus), "Physical GPU,", len(logical_gpus), "Logical GPUs")
+				
 			except RuntimeError as e:
 				# Virtual devices must be set before GPUs have been initialized
 				print(e)
@@ -62,19 +66,22 @@ class SpermClassification(object):
 		list_batch_images = self.init_batch(input, self.input_size, batch_size)
 		# print("INPUT = ", list_batch_images)
 		list_predict = []
+		list_scores = []
 		with tf.device(self.device):
 			for batch in list_batch_images:
 				y_predict = self.model.predict(batch)
 				# print("Y PREDICT = ", y_predict)
 				y_target = np.argmax(y_predict, axis=1)
+				scores = np.max(y_predict, axis=1)
 				
 				# limit label
 				y_target = np.clip(y_target, 0, 1)
 				list_predict.extend(y_target)
+				list_scores.extend(scores)
 		# print('LIST PREDICT = ', list_predict)
 		print('TYPE _PREDICT = ', type(y_target))
 		print("LIST PREDICT = ", list_predict)
-		return list_predict
+		return list_predict, list_scores
 	
 	def preprocess(self, input, input_size:int=150) -> Any:
 		"""

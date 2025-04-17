@@ -79,9 +79,11 @@ class Processor(object):
             t_check = time.time()
             ret, frame = cap.read()
             frame_counter += 1
+
+            # print('OKE', frame.shape, ret)
             
-            # if not ret:
-            #     break
+            if not ret:
+                break
 
             # Detector
             try:
@@ -93,8 +95,10 @@ class Processor(object):
                                                 agnostic_nms=True,
                                                 max_det=1000
                                             )
-            except:
-                break
+            except Exception as e:
+                # print('ERROR = ', e)
+                # break
+                continue
             
             print('TIME DETECT = ', time.time() - t_check)
             t_check = time.time()
@@ -123,8 +127,8 @@ class Processor(object):
             t_check = time.time()
 
             # Sperm classification
-            list_sperm_types = self.classificator(crop_objs, self.batch_size)
-            for index, (det_ind, sperm_type) in enumerate(zip(inds, list_sperm_types)):
+            list_sperm_types, list_sperm_scores = self.classificator(crop_objs, self.batch_size)
+            for index, (det_ind, sperm_type, sperm_score) in enumerate(zip(inds, list_sperm_types, list_sperm_scores)):
                 sperm_id = list_sperm_ids[det_ind]
                 coord = list_sperm_coords[det_ind]
                 if sperm_id not in sperm_statistic:
@@ -143,9 +147,9 @@ class Processor(object):
                 
                 # Draw
                 xyxy = xyxys[index]
-                cv2.rectangle(frame, (xyxy[0], xyxy[1]), (xyxy[2], xyxy[3]),(0, 255, 0) if sperm_type == 0 else (0, 0, 255), 1)
-                cv2.putText(frame, '{}'.format(sperm_id), (xyxy[0], xyxy[1]), cv2.FONT_HERSHEY_COMPLEX_SMALL, 0.5, (255, 0, 0), 1)
-                # cv2.putText(frame, 'Type : {} : {:.2f}'.format(self.sperm_detector.class_names[cls], conf), (xyxy[0], xyxy[1] - 20), cv2.FONT_HERSHEY_COMPLEX_SMALL, 0.5, (0, 255, 0), 1)
+                cv2.rectangle(frame, (xyxy[0], xyxy[1]), (xyxy[2], xyxy[3]),(255, 0, 0) if sperm_type == 0 else (0, 0, 255), 1)
+                # cv2.putText(frame, '{}'.format(sperm_id), (xyxy[0], xyxy[1]), cv2.FONT_HERSHEY_COMPLEX_SMALL, 0.5, (255, 0, 0), 1)
+                cv2.putText(frame, '{} : {:.2f}'.format(CATEGORIES[sperm_type], sperm_score), (xyxy[0], xyxy[1] - 20), cv2.FONT_HERSHEY_COMPLEX_SMALL, 0.5, (255, 0, 0) if sperm_type == 0 else (0, 0, 255), 1)
             out.write(frame)
             
             print('TIME INFER = ', time.time() - start)
@@ -178,7 +182,8 @@ class Processor(object):
                     current_coord = coord_convert
                     current_frame_time = frame_time
             # print('DISTANCE = ', distance)/
-            return distance / (num_frame / fps)
+            # return str(round(distance * 1.0 / (num_frame * 1.0 / fps), 2))
+            return round(distance * 1.0 / (num_frame * 1.0 / fps), 2)
 
         def get_type(list_type: list):
             """
@@ -222,6 +227,7 @@ class Processor(object):
                 ratio_h=ratio_h, 
                 ratio_w=ratio_w
             )
+            print('SPEED = ', speed)
             sperm_type = CATEGORIES[get_type(value['type'])]
             result_info = {'type': sperm_type, 'speed': speed}
             list_sperm_statistic[sperm_id] = result_info
@@ -232,7 +238,7 @@ class Processor(object):
             statistic_final_Result[type_sperm] = 0
         for sperm_id, value in list_sperm_statistic.items():
             statistic_final_Result[value['type']] += 1
-            speed_result.append(int(value['speed']))
+            speed_result.append(value['speed'])
         
         final_result = [speed_result, statistic_final_Result]
                    
