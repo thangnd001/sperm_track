@@ -4,7 +4,7 @@ from collections import Counter
 import json
 import requests
 from io import BytesIO
-from PIL import Image
+from PIL import Image, ImageOps  # Add this import for background removal
 
 import altair as alt
 import gradio as gr
@@ -19,20 +19,30 @@ from scripts.main import Processor
 ROOT_DIR = os.path.dirname(os.path.realpath(__file__))
 ASSETS_DIR = os.path.join(ROOT_DIR, "assets")
 os.makedirs(ASSETS_DIR, exist_ok=True)
-LOGO_PATH = os.path.join(ASSETS_DIR, "haui_logo.jpg")
+LOGO_PATH = os.path.join(ASSETS_DIR, "haui_logo_updated.jpg")
 MEDICAL_ICON_PATH = os.path.join(ASSETS_DIR, "medical_icon.png")
 
-# Download the logo if it doesn't exist
+# Update the logo path to the new HAUI logo
 def ensure_logo_exists():
     if not os.path.exists(LOGO_PATH):
         try:
-            logo_url = "https://inkythuatso.com/uploads/thumbnails/800/2021/12/logo-dai-hoc-cong-nghiep-ha-noi-inkythuatso-01-21-16-44-16.jpg"
+            # Save the provided HAUI logo
+            logo_url = "path/to/new/haui_logo.jpg"  # Replace with the actual path to the provided logo
             response = requests.get(logo_url)
-            img = Image.open(BytesIO(response.content))
+            img = Image.open(BytesIO(response.content)).convert("RGBA")
+            
+            # Remove white background
+            data = np.array(img)
+            red, green, blue, alpha = data.T
+            white_areas = (red == 255) & (green == 255) & (blue == 255)
+            data[..., :-1][white_areas.T] = (0, 0, 0)  # Set white areas to black
+            data[..., -1][white_areas.T] = 0  # Set alpha to 0 for transparency
+            img = Image.fromarray(data)
+            
             img.save(LOGO_PATH)
-            print(f"Logo downloaded and saved to {LOGO_PATH}")
+            print(f"Logo downloaded, processed, and saved to {LOGO_PATH}")
         except Exception as e:
-            print(f"Error downloading logo: {e}")
+            print(f"Error downloading or processing logo: {e}")
     return LOGO_PATH
 
 # Download the medical icon if it doesn't exist
@@ -319,11 +329,14 @@ def main_ui():
             margin-top: 30px;
             text-align: center;
             font-size: 14px;
-            color: white; /* Changed to white */
             padding: 15px;
             background-color: #2563eb; /* Changed to lighter blue */
+            color: white !important; /* Ensure footer text is white */
             border-radius: 12px;
             box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        }
+        .footer p {
+            color: white !important; /* Explicitly set paragraph text color */
         }
         .button-group {
             display: flex;
@@ -335,18 +348,18 @@ def main_ui():
             # Header with logo and title
             with gr.Row(elem_classes="header-container"):
                 with gr.Column(scale=1, min_width=120, elem_classes="logo-container"):
-                    gr.Image(logo_path, show_label=False, height=120)
+                    gr.Image(logo_path, show_label=False, show_download_button=False, height=120)
                 with gr.Column(scale=3, elem_classes="title-container"):
                     gr.HTML(
                         """
                         <div>
                             <h1 class="app-title">Human Sperm Analysis Tool</h1>
-                            <p class="app-subtitle">Hanoi University of Industry - Research Laboratory</p>
+                            <p class="app-subtitle">Hanoi University of Industry</p>
                         </div>
                         """
                     )
                 with gr.Column(scale=1, min_width=120, elem_classes="logo-container"):
-                    gr.Image(medical_icon_path, show_label=False, height=120)
+                    gr.Image(medical_icon_path, show_label=False, show_download_button=False, height=120)
             
             # Process video section
             with gr.Box(elem_classes="container"):
@@ -408,8 +421,8 @@ def main_ui():
             # Footer
             gr.HTML(
                 """
-                <div class="footer">
-                    <p>© 2025 Hanoi University of Industry - Biomedical Imaging Research Group. All rights reserved.</p>
+                <div class="footer" style="color: white !important; text-align: center;">
+                    <p style="color: white !important;">© 2025 Hanoi University of Industry - Biomedical Imaging Research Group. All rights reserved.</p>
                 </div>
                 """
             )
