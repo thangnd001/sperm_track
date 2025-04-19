@@ -19,8 +19,8 @@ from scripts.main import Processor
 ROOT_DIR = os.path.dirname(os.path.realpath(__file__))
 ASSETS_DIR = os.path.join(ROOT_DIR, "assets")
 os.makedirs(ASSETS_DIR, exist_ok=True)
-LOGO_PATH = os.path.join(ASSETS_DIR, "haui_logo_updated.jpg")
-MEDICAL_ICON_PATH = os.path.join(ASSETS_DIR, "medical_icon.png")
+LOGO_PATH = os.path.join(ASSETS_DIR, "haui_logo.jpg")
+MEDICAL_ICON_PATH = os.path.join(ASSETS_DIR, "medical_logo.png")
 
 # Update the logo path to the new HAUI logo
 def ensure_logo_exists():
@@ -355,6 +355,7 @@ def main_ui():
                         <div>
                             <h1 class="app-title">Human Sperm Analysis Tool</h1>
                             <p class="app-subtitle">Hanoi University of Industry</p>
+                            <p class="app-subtitle">School Of Information & Communications Technology</p>
                         </div>
                         """
                     )
@@ -415,14 +416,14 @@ def main_ui():
                         
                         ### Research Team
                         
-                        Developed by the Biomedical Imaging Research Laboratory at Hanoi University of Industry.
+                        Developed by PhD. Vu Viet Thang and colleagues who participated in the project.
                         """)
             
             # Footer
             gr.HTML(
                 """
                 <div class="footer" style="color: white !important; text-align: center;">
-                    <p style="color: white !important;">© 2025 Hanoi University of Industry - Biomedical Imaging Research Group. All rights reserved.</p>
+                    <p style="color: white !important;">© 2025 Hanoi University of Industry - SICT. All rights reserved.</p>
                 </div>
                 """
             )
